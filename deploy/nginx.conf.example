@@ -1,0 +1,49 @@
+# Nginx reverse proxy & static file config for Connect 4 (WeakC4)
+# Place in /etc/nginx/sites-available/connect4 and symlink into /etc/nginx/sites-enabled/
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name connect4.example.com;
+
+    # Path to the built Svelte frontend (synced by GitHub Actions)
+    root /var/www/connect4/frontend/dist;
+    index index.html;
+
+    # Cache static fingerprinted assets aggressively
+    location /assets/ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Real-time Admin SSE stream (disable buffering for instant updates)
+    location = /api/admin/stream {
+        proxy_pass http://127.0.0.1:8000/api/admin/stream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+    }
+
+    # Proxy API requests to FastAPI / Uvicorn
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 10s;
+    }
+
+    # SPA fallback (supports / and /admin routes)
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

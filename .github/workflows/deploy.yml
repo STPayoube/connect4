@@ -1,0 +1,97 @@
+name: Deploy Connect4
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/var/www/connect4' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend bundle
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Add VPS host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p 22 -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Sync project files to VPS
+        run: |
+          ssh -p 22 "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "mkdir -p ${DEPLOY_PATH}/backend ${DEPLOY_PATH}/frontend/dist ${DEPLOY_PATH}/deploy"
+
+          rsync -avz --delete \
+            --exclude='.venv' \
+            --exclude='__pycache__' \
+            --exclude='.pytest_cache' \
+            --exclude='.env' \
+            --exclude='*.log' \
+            -e "ssh -p 22" \
+            ./backend/ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${DEPLOY_PATH}/backend/"
+
+          rsync -avz --delete \
+            -e "ssh -p 22" \
+            ./frontend/dist/ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${DEPLOY_PATH}/frontend/dist/"
+
+          rsync -avz --delete \
+            -e "ssh -p 22" \
+            ./deploy/ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${DEPLOY_PATH}/deploy/"
+
+      - name: Install Python dependencies & restart service on VPS
+        env:
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          CORS_ORIGINS: ${{ vars.CORS_ORIGINS || '' }}
+        run: |
+          ssh -p 22 "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" bash -s -- "${DEPLOY_PATH}" <<'EOF'
+            set -euo pipefail
+            cd "$1/backend"
+
+            if [ ! -d ".venv" ]; then
+              python3 -m venv .venv
+            fi
+            .venv/bin/pip install -q --upgrade pip
+            .venv/bin/pip install -q -r requirements.txt
+          EOF
+
+          if [ -n "${ADMIN_PASSWORD}" ]; then
+            ssh -p 22 "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "cat > ${DEPLOY_PATH}/backend/.env && chmod 600 ${DEPLOY_PATH}/backend/.env" <<EOF
+          ADMIN_PASSWORD=${ADMIN_PASSWORD}
+          CORS_ORIGINS=${CORS_ORIGINS}
+          EOF
+          fi
+
+          ssh -p 22 "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" bash -s <<'EOF'
+            set -euo pipefail
+            if systemctl list-unit-files | grep -q '^connect4\.service'; then
+              sudo systemctl restart connect4
+              sudo systemctl is-active --quiet connect4
+              echo "Restarted systemd service: connect4"
+            elif command -v pm2 >/dev/null 2>&1 && pm2 describe connect4-api >/dev/null 2>&1; then
+              pm2 restart connect4-api
+              echo "Restarted PM2 app: connect4-api"
+            else
+              echo "Files synced! Install deploy/connect4.service (systemd) or deploy/ecosystem.config.cjs (PM2) on the VPS to run the backend daemon."
+            fi
+          EOF
