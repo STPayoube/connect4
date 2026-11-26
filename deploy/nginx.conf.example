@@ -7,7 +7,7 @@ server {
     server_name connect4.example.com;
 
     # Path to the built Svelte frontend (synced by GitHub Actions)
-    root /var/www/connect4/frontend/dist;
+    root /var/www/html/connect4/frontend/dist;
     index index.html;
 
     # Cache static fingerprinted assets aggressively

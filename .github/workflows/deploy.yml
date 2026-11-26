@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/var/www/connect4' }}
+  DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/var/www/html/connect4' }}
 
 jobs:
   deploy:

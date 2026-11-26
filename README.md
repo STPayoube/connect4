@@ -84,16 +84,16 @@ Go to **GitHub Repo → Settings → Secrets and variables → Actions**:
 | Secret | `VPS_USER` | SSH user (same as SyncEDT) |
 | Secret | `VPS_SSH_KEY` | Private SSH key authorized on the VPS |
 | Secret | `ADMIN_PASSWORD` | Strong password for `/admin` Control Panel |
-| Variable *(optional)* | `VPS_DEPLOY_PATH` | Target directory on VPS (default: `/var/www/connect4`) |
+| Variable *(optional)* | `VPS_DEPLOY_PATH` | Target directory on VPS (default: `/var/www/html/connect4`) |
 | Variable *(optional)* | `CORS_ORIGINS` | Allowed origin(s), e.g. `https://connect4.yourdomain.com` |
 
 ### 2. One-Time VPS Setup (Systemd + Nginx)
 
-After the first workflow run syncs files into `/var/www/connect4`:
+After the first workflow run syncs files into `/var/www/html/connect4`:
 
 ```bash
 # Install and enable the backend systemd service
-sudo cp /var/www/connect4/deploy/connect4.service /etc/systemd/system/connect4.service
+sudo cp /var/www/html/connect4/deploy/connect4.service /etc/systemd/system/connect4.service
 # Edit User/Group if your deploy user is not www-data
 sudo nano /etc/systemd/system/connect4.service
 sudo systemctl daemon-reload
@@ -103,7 +103,8 @@ sudo systemctl enable --now connect4
 # echo "<VPS_USER> ALL=(ALL) NOPASSWD: /bin/systemctl restart connect4, /bin/systemctl is-active --quiet connect4" | sudo tee /etc/sudoers.d/connect4
 
 # Configure Nginx reverse proxy (+ SSE support for /api/admin/stream)
-sudo cp /var/www/connect4/deploy/nginx.conf.example /etc/nginx/sites-available/connect4
+sudo cp /var/www/html/connect4/deploy/nginx.conf.example /etc/nginx/sites-available/connect4
+# Update server_name and root path in /etc/nginx/sites-available/connect4
 sudo nano /etc/nginx/sites-available/connect4
 sudo ln -s /etc/nginx/sites-available/connect4 /etc/nginx/sites-enabled/connect4
 sudo nginx -t && sudo systemctl reload nginx
@@ -112,4 +113,4 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d connect4.example.com
 ```
 
-*(Prefer PM2 instead of systemd? Run `pm2 start /var/www/connect4/deploy/ecosystem.config.cjs && pm2 save`—the GitHub Actions workflow detects and restarts `pm2` automatically if systemd is not installed.)*
+*(Prefer PM2 instead of systemd? Run `pm2 start /var/www/html/connect4/deploy/ecosystem.config.cjs && pm2 save`—the GitHub Actions workflow detects and restarts `pm2` automatically if systemd is not installed.)*
