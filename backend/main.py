@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -23,13 +23,22 @@ from schemas import (
     ResetGameRequest,
 )
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(ENV_PATH)
 
 logger = logging.getLogger("connect4")
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 if ADMIN_PASSWORD == "admin123":
     logger.warning("ADMIN_PASSWORD is using the default local value. Set ADMIN_PASSWORD in .env on production VPS!")
+
+
+def _get_admin_password() -> str:
+    if ENV_PATH.is_file():
+        file_pwd = dotenv_values(ENV_PATH).get("ADMIN_PASSWORD")
+        if file_pwd is not None and file_pwd.strip():
+            return file_pwd.strip()
+    return os.getenv("ADMIN_PASSWORD", ADMIN_PASSWORD).strip()
 
 ADMIN_TOKEN_TTL_SECONDS = 86400
 _admin_tokens: dict[str, float] = {}
@@ -142,8 +151,8 @@ def delete_game(session_id: str):
 
 @app.post("/api/admin/login")
 def admin_login(payload: AdminLoginRequest):
-    expected = os.getenv("ADMIN_PASSWORD", ADMIN_PASSWORD)
-    if not hmac.compare_digest(payload.password, expected):
+    expected = _get_admin_password()
+    if not hmac.compare_digest(payload.password.strip(), expected):
         raise HTTPException(status_code=401, detail="Invalid admin password.")
     now = time.time()
     for expired_tok in [t for t, exp in _admin_tokens.items() if now > exp]:

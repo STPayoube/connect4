@@ -75,18 +75,25 @@ jobs:
             .venv/bin/pip install -q -r requirements.txt
           EOF
 
-          if [ -n "${ADMIN_PASSWORD}" ]; then
+          CLEAN_ADMIN_PWD="$(printf '%s' "${ADMIN_PASSWORD}" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          if [ -n "${CLEAN_ADMIN_PWD}" ]; then
             ssh -p 22 "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "cat > ${DEPLOY_PATH}/backend/.env && chmod 600 ${DEPLOY_PATH}/backend/.env" <<EOF
-          ADMIN_PASSWORD=${ADMIN_PASSWORD}
+          ADMIN_PASSWORD=${CLEAN_ADMIN_PWD}
           CORS_ORIGINS=${CORS_ORIGINS}
           EOF
+            echo "Updated ${DEPLOY_PATH}/backend/.env (ADMIN_PASSWORD length: ${#CLEAN_ADMIN_PWD})"
           fi
 
           ssh -p 22 "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" bash -s <<'EOF'
             set -euo pipefail
-            if systemctl list-unit-files | grep -q '^connect4\.service'; then
-              sudo systemctl restart connect4
-              sudo systemctl is-active --quiet connect4
+            if [ -f /etc/systemd/system/connect4.service ]; then
+              if [ "$(id -u)" -eq 0 ]; then
+                systemctl restart connect4
+                systemctl is-active --quiet connect4
+              else
+                sudo systemctl restart connect4
+                sudo systemctl is-active --quiet connect4
+              fi
               echo "Restarted systemd service: connect4"
             elif command -v pm2 >/dev/null 2>&1 && pm2 describe connect4-api >/dev/null 2>&1; then
               pm2 restart connect4-api
