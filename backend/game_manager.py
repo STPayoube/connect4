@@ -177,9 +177,16 @@ class GameSession:
         self._notify()
         return applied
 
+    def _can_undo(self) -> bool:
+        if not self.snapshots:
+            return False
+        if self.config.mode == "human_vs_ai":
+            return any(s.mover_type == "human" for s in self.snapshots)
+        return True
+
     def undo(self) -> None:
         with self.lock:
-            if not self.snapshots:
+            if not self._can_undo():
                 raise GameError("No moves to undo.", status_code=400)
 
             if self.config.mode == "human_vs_ai":
@@ -214,7 +221,7 @@ class GameSession:
             last_move=self.move_history[-1] if self.move_history else None,
             moves_applied=moves_applied or [],
             move_history=list(self.move_history),
-            can_undo=len(self.snapshots) > 0,
+            can_undo=self._can_undo(),
             ai_info=AiInfo(**self.last_ai_info) if self.last_ai_info else None,
             created_at=self.created_at,
             updated_at=self.updated_at,

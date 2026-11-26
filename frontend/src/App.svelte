@@ -33,6 +33,7 @@
   };
 
   function detectAdminRoute() {
+    if (typeof window === 'undefined') return false;
     return (
       window.location.pathname.replace(/\/+$/, '') === '/admin' ||
       window.location.hash === '#/admin'
@@ -57,10 +58,14 @@
 
   let activeController = null;
   let autoPlayTimer = null;
+  let openingAiTimer = null;
 
   let canHumanInteract = $derived(
     Boolean(
-      game &&
+      !isAdminView &&
+        !settingsOpen &&
+        !showUsernameModal &&
+        game &&
         game.status === 'playing' &&
         !isThinking &&
         !isLoading &&
@@ -68,20 +73,9 @@
     )
   );
 
-  function navigateTo(admin) {
-    isAdminView = admin;
-    const targetPath = admin ? '/admin' : '/';
-    if (window.location.pathname !== targetPath) {
-      window.history.pushState({}, '', targetPath);
-    }
-    if (!admin && !game && username) {
-      initSession({ ...DEFAULT_CONFIG, username });
-    }
-  }
-
-  function handlePopState() {
-    isAdminView = detectAdminRoute();
-  }
+  let settingsConfig = $derived(
+    game?.config ?? { ...DEFAULT_CONFIG, username: username || 'Guest' }
+  );
 
   function cancelPendingWork() {
     isAutoPlaying = false;
@@ -89,40 +83,88 @@
       clearTimeout(autoPlayTimer);
       autoPlayTimer = null;
     }
+    if (openingAiTimer) {
+      clearTimeout(openingAiTimer);
+      openingAiTimer = null;
+    }
     if (activeController) {
       activeController.abort();
       activeController = null;
     }
+    isLoading = false;
+    isThinking = false;
+  }
+
+  function syncViewState(admin) {
+    isAdminView = admin;
+    if (admin) {
+      cancelPendingWork();
+      showUsernameModal = false;
+      settingsOpen = false;
+      return;
+    }
+    if (!username) {
+      showUsernameModal = true;
+    } else if (!game && !isLoading) {
+      initSession({ ...DEFAULT_CONFIG, username });
+    }
+  }
+
+  function navigateTo(admin) {
+    const targetPath = admin ? '/admin' : '/';
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({}, '', targetPath);
+    }
+    syncViewState(admin);
+  }
+
+  function handlePopState() {
+    syncViewState(detectAdminRoute());
   }
 
   async function initSession(config = DEFAULT_CONFIG) {
     cancelPendingWork();
     error = null;
     isLoading = true;
-    activeController = new AbortController();
-    const signal = activeController.signal;
+    const controller = new AbortController();
+    activeController = controller;
+    const signal = controller.signal;
 
     try {
       const state = await createGame({ ...config, auto_play_opening_ai: false }, signal);
+      if (activeController !== controller) return;
       game = state;
       isLoading = false;
       maybeTriggerOpeningHumanVsAiMove(state);
     } catch (err) {
-      if (err.name === 'AbortError') return;
+      if (err.name === 'AbortError' || activeController !== controller) return;
       error = err.message || 'Could not reach Connect 4 backend.';
       isLoading = false;
     }
   }
 
   function maybeTriggerOpeningHumanVsAiMove(state) {
+    if (openingAiTimer) {
+      clearTimeout(openingAiTimer);
+      openingAiTimer = null;
+    }
     if (
       state &&
       state.config.mode === 'human_vs_ai' &&
       state.status === 'playing' &&
       state.players?.[String(state.current_player)]?.type === 'ai'
     ) {
-      setTimeout(() => {
-        if (game?.session_id === state.session_id && game?.status === 'playing') {
+      const targetSessionId = state.session_id;
+      const targetUpdatedAt = state.updated_at;
+      openingAiTimer = setTimeout(() => {
+        openingAiTimer = null;
+        if (
+          !isAdminView &&
+          game?.session_id === targetSessionId &&
+          game?.updated_at === targetUpdatedAt &&
+          game?.status === 'playing' &&
+          game?.players?.[String(game.current_player)]?.type === 'ai'
+        ) {
           runAiStep();
         }
       }, 280);
@@ -133,11 +175,13 @@
     if (!canHumanInteract || !game) return;
     error = null;
     isThinking = true;
-    activeController = new AbortController();
-    const signal = activeController.signal;
+    const controller = new AbortController();
+    activeController = controller;
+    const signal = controller.signal;
 
     try {
       const afterHuman = await playHumanMove(game.session_id, col, false, signal);
+      if (activeController !== controller) return;
       game = afterHuman;
 
       if (
@@ -145,13 +189,22 @@
         afterHuman.players?.[String(afterHuman.current_player)]?.type === 'ai'
       ) {
         const afterAi = await stepAiMove(afterHuman.session_id, signal);
+        if (activeController !== controller) return;
         game = afterAi;
       }
     } catch (err) {
-      if (err.name === 'AbortError') return;
+      if (err.name === 'AbortError' || activeController !== controller) return;
+      if (err.status === 404) {
+        const cfg = { ...(game?.config || DEFAULT_CONFIG), username: username || 'Guest' };
+        error = 'Your session expired after a server restart. Started a fresh game.';
+        await initSession(cfg);
+        return;
+      }
       error = err.message || 'Failed to play move.';
     } finally {
-      isThinking = false;
+      if (activeController === controller) {
+        isThinking = false;
+      }
     }
   }
 
@@ -161,30 +214,45 @@
 
     error = null;
     isThinking = true;
-    activeController = new AbortController();
-    const signal = activeController.signal;
+    const controller = new AbortController();
+    activeController = controller;
+    const signal = controller.signal;
 
     try {
       const updated = await stepAiMove(game.session_id, signal);
+      if (activeController !== controller) return;
       game = updated;
       if (updated.status !== 'playing') {
         isAutoPlaying = false;
       }
     } catch (err) {
-      if (err.name === 'AbortError') return;
-      error = err.message || 'AI move failed.';
+      if (err.name === 'AbortError' || activeController !== controller) return;
       isAutoPlaying = false;
+      if (err.status === 404) {
+        const cfg = { ...(game?.config || DEFAULT_CONFIG), username: username || 'Guest' };
+        error = 'Your session expired after a server restart. Started a fresh game.';
+        await initSession(cfg);
+        return;
+      }
+      error = err.message || 'AI move failed.';
     } finally {
-      isThinking = false;
+      if (activeController === controller) {
+        isThinking = false;
+      }
     }
   }
 
   function scheduleNextAutoStep() {
+    if (autoPlayTimer) {
+      clearTimeout(autoPlayTimer);
+      autoPlayTimer = null;
+    }
     if (!isAutoPlaying || !game || game.status !== 'playing') {
       isAutoPlaying = false;
       return;
     }
     autoPlayTimer = setTimeout(async () => {
+      autoPlayTimer = null;
       if (!isAutoPlaying) return;
       await runAiStep();
       if (isAutoPlaying && game?.status === 'playing') {
@@ -214,9 +282,20 @@
   async function handleNewGame(overrides = {}) {
     cancelPendingWork();
     error = null;
+
+    const currentCfg = game?.config || DEFAULT_CONFIG;
     const baseCfg = {
-      ...(game?.config || DEFAULT_CONFIG),
+      rows: currentCfg.rows,
+      cols: currentCfg.cols,
+      align: currentCfg.align,
+      mode: currentCfg.mode,
+      starting_player: currentCfg.starting_player,
+      human_player: currentCfg.human_player,
+      ai_level: currentCfg.ai_level,
+      ai2_level: currentCfg.ai2_level,
       username: username || 'Guest',
+      player2_name: currentCfg.player2_name || 'Player 2',
+      random_start: false,
       ...overrides,
     };
 
@@ -225,8 +304,9 @@
     }
 
     isLoading = true;
-    activeController = new AbortController();
-    const signal = activeController.signal;
+    const controller = new AbortController();
+    activeController = controller;
+    const signal = controller.signal;
 
     try {
       const state = await resetGame(
@@ -234,11 +314,12 @@
         { ...overrides, username: baseCfg.username, auto_play_opening_ai: false },
         signal
       );
+      if (activeController !== controller) return;
       game = state;
       isLoading = false;
       maybeTriggerOpeningHumanVsAiMove(state);
     } catch (err) {
-      if (err.name === 'AbortError') return;
+      if (err.name === 'AbortError' || activeController !== controller) return;
       if (err.status === 404) {
         return initSession(baseCfg);
       }
@@ -258,18 +339,27 @@
 
   function handleQuickLevel(newLevel) {
     if (game?.config?.ai_level === newLevel) return;
-    handleNewGame({ ai_level: newLevel });
+    handleNewGame({ ai_level: newLevel, ai2_level: newLevel });
   }
 
   async function handleUndo() {
     if (!game || !game.can_undo || isThinking) return;
     cancelPendingWork();
     error = null;
-    activeController = new AbortController();
+    const controller = new AbortController();
+    activeController = controller;
     try {
-      game = await undoMove(game.session_id, activeController.signal);
+      const state = await undoMove(game.session_id, controller.signal);
+      if (activeController !== controller) return;
+      game = state;
     } catch (err) {
-      if (err.name === 'AbortError') return;
+      if (err.name === 'AbortError' || activeController !== controller) return;
+      if (err.status === 404) {
+        const cfg = { ...(game?.config || DEFAULT_CONFIG), username: username || 'Guest' };
+        error = 'Your session expired after a server restart. Started a fresh game.';
+        await initSession(cfg);
+        return;
+      }
       error = err.message || 'Could not undo move.';
     }
   }
@@ -287,12 +377,13 @@
     event.preventDefault();
     const cleaned = usernameDraft.trim().slice(0, 32);
     if (!cleaned) return;
+    const changed = cleaned !== username;
     username = cleaned;
     localStorage.setItem(USERNAME_STORAGE_KEY, cleaned);
     showUsernameModal = false;
     if (!game) {
       initSession({ ...DEFAULT_CONFIG, username: cleaned });
-    } else {
+    } else if (changed) {
       handleNewGame({ username: cleaned });
     }
   }
@@ -318,7 +409,9 @@
   });
 
   onDestroy(() => {
-    window.removeEventListener('popstate', handlePopState);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('popstate', handlePopState);
+    }
     cancelPendingWork();
   });
 </script>
@@ -427,7 +520,13 @@
             {isAutoPlaying}
             {autoSpeedMs}
             {showInspector}
-            onNewGame={() => handleNewGame({ random_start: false })}
+            onNewGame={() =>
+              handleNewGame({
+                starting_player: game?.config?.random_start
+                  ? 1
+                  : game?.config?.starting_player || 1,
+                random_start: false,
+              })}
             onRandomStart={handleRandomStart}
             onSwitchMode={handleSwitchMode}
             onQuickLevel={handleQuickLevel}
@@ -474,22 +573,36 @@
             class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
           />
 
-          <div class="flex items-center justify-end gap-2">
-            {#if username}
+          <div class="flex items-center justify-between gap-2">
+            {#if !username}
               <button
                 type="button"
-                onclick={() => (showUsernameModal = false)}
-                class="rounded-xl border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+                onclick={() => navigateTo(true)}
+                class="text-xs font-medium text-slate-500 hover:text-slate-300"
               >
-                Cancel
+                Admin login
               </button>
+            {:else}
+              <span></span>
             {/if}
-            <button
-              type="submit"
-              class="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500"
-            >
-              {username ? 'Save' : 'Start Playing'}
-            </button>
+
+            <div class="flex items-center gap-2">
+              {#if username}
+                <button
+                  type="button"
+                  onclick={() => (showUsernameModal = false)}
+                  class="rounded-xl border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+              {/if}
+              <button
+                type="submit"
+                class="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500"
+              >
+                {username ? 'Save' : 'Start Playing'}
+              </button>
+            </div>
           </div>
         </form>
       </div>
@@ -498,7 +611,7 @@
 
   <GameSettingsModal
     open={settingsOpen}
-    config={game?.config || { ...DEFAULT_CONFIG, username: username || 'Guest' }}
+    config={settingsConfig}
     onClose={() => (settingsOpen = false)}
     onApply={handleApplySettings}
   />

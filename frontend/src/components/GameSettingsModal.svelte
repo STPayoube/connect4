@@ -21,8 +21,10 @@
     { name: 'Connect 5', rows: 8, cols: 9, align: 5 },
   ];
 
+  let wasOpen = false;
+
   $effect(() => {
-    if (open && config) {
+    if (open && !wasOpen && config) {
       rows = config.rows;
       cols = config.cols;
       align = config.align;
@@ -34,6 +36,7 @@
       username = config.username || 'Guest';
       player2Name = config.player2_name || 'Player 2';
     }
+    wasOpen = open;
   });
 
   let maxAlign = $derived(Math.min(rows, cols));

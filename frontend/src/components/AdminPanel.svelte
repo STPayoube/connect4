@@ -26,9 +26,11 @@
   let filterStatus = $state('all'); // all | playing | finished
   let searchQuery = $state('');
   let spectateId = $state(null);
+  let nowMs = $state(Date.now());
 
   let eventSource = null;
   let reconnectTimer = null;
+  let clockTimer = null;
 
   let sessionsList = $derived(
     Object.values(sessionsMap)
@@ -185,7 +187,7 @@
   }
 
   function formatTimeAgo(ts) {
-    const diff = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+    const diff = Math.max(0, Math.floor(nowMs / 1000 - ts));
     if (diff < 5) return 'just now';
     if (diff < 60) return `${diff}s ago`;
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
@@ -196,7 +198,16 @@
     return (session.winning_cells || []).some(([wr, wc]) => wr === r && wc === c);
   }
 
+  function handleWindowKeydown(event) {
+    if (event.key === 'Escape' && spectateId) {
+      spectateId = null;
+    }
+  }
+
   onMount(() => {
+    clockTimer = setInterval(() => {
+      nowMs = Date.now();
+    }, 5000);
     const saved = sessionStorage.getItem(TOKEN_KEY);
     if (saved) {
       token = saved;
@@ -205,9 +216,15 @@
   });
 
   onDestroy(() => {
+    if (clockTimer) {
+      clearInterval(clockTimer);
+      clockTimer = null;
+    }
     closeStream();
   });
 </script>
+
+<svelte:window onkeydown={handleWindowKeydown} />
 
 <div class="min-h-screen px-4 py-6 sm:px-6 lg:px-8">
   <div class="mx-auto max-w-7xl space-y-6">
@@ -552,6 +569,7 @@
           winningCells={spectatedSession.winning_cells}
           status={spectatedSession.status}
           canInteract={false}
+          animateDrops={false}
         />
 
         <div class="space-y-4">

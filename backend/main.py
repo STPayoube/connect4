@@ -58,10 +58,9 @@ app = FastAPI(
     version="2.0.0",
 )
 
-cors_origins_env = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
-)
+cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
+if not cors_origins_env:
+    cors_origins_env = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173"
 cors_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
 
 app.add_middleware(
@@ -146,8 +145,11 @@ def admin_login(payload: AdminLoginRequest):
     expected = os.getenv("ADMIN_PASSWORD", ADMIN_PASSWORD)
     if not hmac.compare_digest(payload.password, expected):
         raise HTTPException(status_code=401, detail="Invalid admin password.")
+    now = time.time()
+    for expired_tok in [t for t, exp in _admin_tokens.items() if now > exp]:
+        _admin_tokens.pop(expired_tok, None)
     token = secrets.token_urlsafe(32)
-    _admin_tokens[token] = time.time() + ADMIN_TOKEN_TTL_SECONDS
+    _admin_tokens[token] = now + ADMIN_TOKEN_TTL_SECONDS
     return {"token": token, "expires_in": ADMIN_TOKEN_TTL_SECONDS}
 
 
@@ -209,9 +211,12 @@ if os.getenv("SERVE_STATIC", "false").lower() in ("1", "true", "yes"):
     if assets_dir.is_dir():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
+    dist_root = dist_dir.resolve()
+
     @app.get("/{full_path:path}")
     def serve_spa(full_path: str):
-        candidate = dist_dir / full_path
-        if full_path and candidate.is_file():
-            return FileResponse(str(candidate))
-        return FileResponse(str(dist_dir / "index.html"))
+        if full_path:
+            candidate = (dist_root / full_path).resolve()
+            if candidate.is_relative_to(dist_root) and candidate.is_file():
+                return FileResponse(str(candidate))
+        return FileResponse(str(dist_root / "index.html"))

@@ -4,7 +4,7 @@
 server {
     listen 80;
     listen [::]:80;
-    server_name connect4.example.com;
+    server_name connect4.stpayoube.fr;
 
     # Path to the built Svelte frontend (synced by GitHub Actions)
     root /var/www/html/connect4/frontend/dist;
@@ -27,6 +27,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_buffering off;
         proxy_cache off;
+        gzip off;
         proxy_read_timeout 3600s;
     }
 

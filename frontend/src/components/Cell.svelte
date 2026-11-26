@@ -11,6 +11,7 @@
     isHoveredCol = false,
     isValidCol = false,
     canInteract = false,
+    animateDrop = true,
     onSelectCol = () => {},
     onHoverCol = () => {},
   } = $props();
@@ -50,7 +51,7 @@
         {isLastMove}
         {isWinning}
         isDimmed={hasWinner && !isWinning}
-        animateDrop={true}
+        {animateDrop}
       />
     {/if}
   </div>

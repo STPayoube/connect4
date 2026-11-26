@@ -12,6 +12,7 @@
     winningCells = [],
     status = 'playing',
     canInteract = false,
+    animateDrops = true,
     onPlayColumn = () => {},
   } = $props();
 
@@ -101,6 +102,7 @@
             isHoveredCol={hoveredCol === cIdx}
             isValidCol={validSet.has(cIdx)}
             {canInteract}
+            animateDrop={animateDrops}
             onSelectCol={onPlayColumn}
             onHoverCol={(c) => (hoveredCol = c)}
           />
