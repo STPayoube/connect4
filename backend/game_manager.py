@@ -12,6 +12,13 @@ from database import Database
 from schemas import AiInfo, GameConfig, GameStateResponse, MoveRecord, PlayerInfo
 from weakc4 import AI, LEVEL_TO_DEPTH, Connect4, Player
 
+LEVEL_LABELS_FR = {
+    "easy": "Facile",
+    "medium": "Moyen",
+    "hard": "Difficile",
+    "impossible": "Impossible",
+}
+
 
 class GameError(Exception):
     """Domain error with an associated HTTP status code."""
@@ -32,6 +39,60 @@ class UndoSnapshot:
     move_history_len: int
     last_ai_info: Optional[dict]
     mover_type: str
+
+
+def _resize_grid_checked(
+    grid: list[list[int]],
+    new_rows: int,
+    new_cols: int,
+    label: str = "la partie",
+) -> tuple[list[list[int]], int]:
+    """
+    Copy existing board tokens into a new (new_rows x new_cols) grid while preserving
+    bottom-anchored gravity. Raises GameError(409) if shrinking would cut off placed tokens.
+    """
+    old_rows = len(grid)
+    old_cols = len(grid[0]) if old_rows else 0
+
+    blocked_top_rows = []
+    if new_rows < old_rows:
+        cut_rows = old_rows - new_rows
+        for r in range(cut_rows):
+            if any(grid[r][c] != 0 for c in range(old_cols)):
+                blocked_top_rows.append(r + 1)
+
+    blocked_cols = []
+    if new_cols < old_cols:
+        for c in range(new_cols, old_cols):
+            if any(grid[r][c] != 0 for r in range(old_rows)):
+                blocked_cols.append(c + 1)
+
+    if blocked_top_rows or blocked_cols:
+        reasons = []
+        if blocked_top_rows:
+            reasons.append(
+                f"des pions occupent déjà les lignes supérieures ({', '.join(map(str, blocked_top_rows))})"
+            )
+        if blocked_cols:
+            reasons.append(
+                f"des pions occupent déjà les colonnes ({', '.join(map(str, blocked_cols))})"
+            )
+        raise GameError(
+            f"Impossible de réduire {label} en {new_rows}×{new_cols} : {' et '.join(reasons)}.",
+            status_code=409,
+        )
+
+    row_offset = new_rows - old_rows
+    new_grid = [[0 for _ in range(new_cols)] for _ in range(new_rows)]
+    for r in range(old_rows):
+        for c in range(old_cols):
+            val = grid[r][c]
+            if val != 0:
+                nr = r + row_offset
+                if 0 <= nr < new_rows and 0 <= c < new_cols:
+                    new_grid[nr][c] = val
+
+    return new_grid, row_offset
 
 
 @dataclass
@@ -102,51 +163,170 @@ class GameSession:
     def _advance_turn(self):
         self.c4.current_player = 2 if self.c4.current_player == 1 else 1
 
-    def set_ai_level(self, ai_level: str, ai2_level: Optional[str] = None) -> None:
-        """Hot-swap AI difficulty in place while a game is running."""
+    def check_resize_possible(self, new_rows: int, new_cols: int, new_align: int) -> None:
+        """Dry-run validation used before batch-updating live games."""
+        if not (4 <= new_rows <= 10 and 4 <= new_cols <= 10):
+            raise GameError("Les dimensions doivent être comprises entre 4 et 10.", status_code=400)
+        if new_align < 3 or new_align > min(new_rows, new_cols):
+            raise GameError(
+                f"L'alignement ({new_align}) ne peut pas dépasser {min(new_rows, new_cols)}.",
+                status_code=400,
+            )
         with self.lock:
-            if self.config.mode == "player_vs_player":
-                raise GameError("Cannot change AI difficulty on a Player vs Player game.", status_code=400)
+            _resize_grid_checked(
+                self.c4.grid, new_rows, new_cols, label=f"la partie de {self.config.username}"
+            )
 
-            depth1 = LEVEL_TO_DEPTH[ai_level]
-            lvl2 = ai2_level if (self.config.mode == "ai_vs_ai" and ai2_level) else ai_level
-            depth2 = LEVEL_TO_DEPTH[lvl2]
+    def apply_live_config(
+        self,
+        ai_level: Optional[str] = None,
+        ai2_level: Optional[str] = None,
+        rows: Optional[int] = None,
+        cols: Optional[int] = None,
+        align: Optional[int] = None,
+        allow_undo: Optional[bool] = None,
+    ) -> None:
+        """
+        Live-update board dimensions (copying existing checkers with gravity), alignment,
+        undo permission, and/or AI difficulty while the game is actively being played.
+        """
+        just_finished = False
+        with self.lock:
+            new_rows = self.c4.row if rows is None else int(rows)
+            new_cols = self.c4.col if cols is None else int(cols)
+            new_align = self.c4.align if align is None else int(align)
 
-            self.config.ai_level = ai_level
-            self.config.ai_depth = depth1
-            self.config.ai2_level = lvl2
-            self.config.ai2_depth = depth2
+            if not (4 <= new_rows <= 10 and 4 <= new_cols <= 10):
+                raise GameError(
+                    "Les dimensions doivent être comprises entre 4 et 10.", status_code=400
+                )
+            if new_align < 3 or new_align > min(new_rows, new_cols):
+                raise GameError(
+                    f"L'alignement ({new_align}) ne peut pas dépasser {min(new_rows, new_cols)}.",
+                    status_code=400,
+                )
 
-            for pid in (1, 2):
-                obj = self.player_objs[pid]
-                meta = self.player_meta[pid]
-                if isinstance(obj, AI):
-                    target_lvl = lvl2 if (self.config.mode == "ai_vs_ai" and pid == 2) else ai_level
-                    target_depth = depth2 if (self.config.mode == "ai_vs_ai" and pid == 2) else depth1
-                    obj.level = target_lvl
-                    obj.depth = target_depth
-                    meta.level = target_lvl
-                    meta.depth = target_depth
-                    if self.channel == "winaprize":
-                        meta.name = "Connect 4 AI"
-                    elif self.config.mode == "ai_vs_ai":
-                        meta.name = f"AI {pid} ({target_lvl.capitalize()})"
-                    else:
-                        meta.name = f"AI ({target_lvl.capitalize()})"
-                    obj.name = meta.name
-                    self.c4.players[pid][0] = meta.name
+            dimensions_changed = (
+                new_rows != self.c4.row or new_cols != self.c4.col or new_align != self.c4.align
+            )
+
+            if dimensions_changed:
+                new_grid, row_offset = _resize_grid_checked(
+                    self.c4.grid,
+                    new_rows,
+                    new_cols,
+                    label=f"la partie de {self.config.username}",
+                )
+                # Copy databoard into a clean Connect4 instance with updated dimensions/align
+                new_c4 = Connect4(
+                    players=copy.deepcopy(self.c4.players),
+                    current_player=self.c4.current_player,
+                    row=new_rows,
+                    col=new_cols,
+                    align=new_align,
+                    verbose=False,
+                )
+                new_c4.grid = new_grid
+                self.c4 = new_c4
+
+                self.config.rows = new_rows
+                self.config.cols = new_cols
+                self.config.align = new_align
+
+                # Shift recorded move coordinates so last-move highlight stays aligned
+                if row_offset != 0:
+                    self.move_history = [
+                        m.model_copy(update={"row": m.row + row_offset})
+                        for m in self.move_history
+                    ]
+
+                # Resize compatible snapshots (drop any snapshot that wouldn't fit)
+                resized_snaps = []
+                for snap in self.snapshots:
+                    try:
+                        sg, s_off = _resize_grid_checked(snap.grid, new_rows, new_cols)
+                        resized_snaps.append(
+                            UndoSnapshot(
+                                grid=sg,
+                                current_player=snap.current_player,
+                                status=snap.status,
+                                winner=snap.winner,
+                                winning_cells=[[r + s_off, c] for r, c in snap.winning_cells],
+                                move_history_len=snap.move_history_len,
+                                last_ai_info=snap.last_ai_info,
+                                mover_type=snap.mover_type,
+                            )
+                        )
+                    except GameError:
+                        pass
+                self.snapshots = resized_snaps
+
+            if allow_undo is not None:
+                self.allow_undo = bool(allow_undo)
+
+            if ai_level is not None and self.config.mode != "player_vs_player":
+                depth1 = LEVEL_TO_DEPTH[ai_level]
+                lvl2 = (
+                    ai2_level
+                    if (self.config.mode == "ai_vs_ai" and ai2_level)
+                    else ai_level
+                )
+                depth2 = LEVEL_TO_DEPTH[lvl2]
+
+                self.config.ai_level = ai_level
+                self.config.ai_depth = depth1
+                self.config.ai2_level = lvl2
+                self.config.ai2_depth = depth2
+
+                for pid in (1, 2):
+                    obj = self.player_objs[pid]
+                    meta = self.player_meta[pid]
+                    if isinstance(obj, AI):
+                        target_lvl = (
+                            lvl2 if (self.config.mode == "ai_vs_ai" and pid == 2) else ai_level
+                        )
+                        target_depth = (
+                            depth2 if (self.config.mode == "ai_vs_ai" and pid == 2) else depth1
+                        )
+                        obj.level = target_lvl
+                        obj.depth = target_depth
+                        meta.level = target_lvl
+                        meta.depth = target_depth
+                        lvl_label = LEVEL_LABELS_FR.get(target_lvl, target_lvl.capitalize())
+                        if self.channel == "winaprize":
+                            meta.name = "IA Puissance 4"
+                        elif self.config.mode == "ai_vs_ai":
+                            meta.name = f"IA {pid} ({lvl_label})"
+                        else:
+                            meta.name = f"IA ({lvl_label})"
+                        obj.name = meta.name
+                        self.c4.players[pid][0] = meta.name
+
+            if dimensions_changed:
+                just_finished = self._evaluate_outcome()
 
             self.updated_at = time.time()
+
+        if just_finished and self.on_finish:
+            self.on_finish(self)
         self._notify()
+
+    def set_ai_level(self, ai_level: str, ai2_level: Optional[str] = None) -> None:
+        if self.config.mode == "player_vs_player":
+            raise GameError(
+                "Impossible de changer la difficulté IA sur une partie Joueur vs Joueur.",
+                status_code=400,
+            )
+        self.apply_live_config(ai_level=ai_level, ai2_level=ai2_level)
 
     def _apply_ai_turn(self) -> tuple[MoveRecord, bool]:
         if self.status != "playing":
-            raise GameError("Game is already finished.", status_code=409)
+            raise GameError("La partie est déjà terminée.", status_code=409)
         active_id = self.c4.current_player
         active_meta = self.player_meta[active_id]
         if active_meta.type != "ai":
             raise GameError(
-                f"It is currently Player {active_id} ({active_meta.name})'s human turn.",
+                f"C'est actuellement au tour de {active_meta.name} (humain).",
                 status_code=409,
             )
 
@@ -175,25 +355,25 @@ class GameSession:
         just_finished = False
         with self.lock:
             if self.waiting_for_opponent:
-                raise GameError("Waiting for Player 2 to join the room.", status_code=409)
+                raise GameError("En attente du Joueur 2 dans le salon.", status_code=409)
             if self.status != "playing":
-                raise GameError("Game is already finished.", status_code=409)
+                raise GameError("La partie est déjà terminée.", status_code=409)
 
             active_id = self.c4.current_player
             active_meta = self.player_meta[active_id]
             if active_meta.type != "human":
                 raise GameError(
-                    f"Cannot make a human move on Player {active_id} ({active_meta.name})'s AI turn.",
+                    f"Impossible de jouer pendant le tour de {active_meta.name}.",
                     status_code=409,
                 )
 
             if col < 0 or col >= self.c4.col:
                 raise GameError(
-                    f"Column {col} is out of bounds (0..{self.c4.col - 1}).",
+                    f"La colonne {col + 1} est hors limites (1..{self.c4.col}).",
                     status_code=400,
                 )
             if self.c4.get_drop_row(col) is None:
-                raise GameError(f"Column {col} is full.", status_code=400)
+                raise GameError(f"La colonne {col + 1} est pleine.", status_code=400)
 
             self._capture_snapshot("human")
             human_player = self.player_objs[active_id]
@@ -249,7 +429,7 @@ class GameSession:
     def undo(self) -> None:
         with self.lock:
             if not self._can_undo():
-                raise GameError("Undo is disabled or no moves to undo.", status_code=400)
+                raise GameError("Annulation désactivée ou aucun coup à annuler.", status_code=400)
 
             if self.config.mode == "human_vs_ai":
                 snap = self.snapshots.pop()
@@ -275,12 +455,11 @@ class GameSession:
         moves_applied: Optional[list[MoveRecord]] = None,
         for_admin: bool = False,
     ) -> GameStateResponse:
-        # On /winaprize player responses, hide live difficulty metadata for stealth difficulty switching
         players_payload = {}
         for k, meta in self.player_meta.items():
             if self.channel == "winaprize" and not for_admin and meta.type == "ai":
                 players_payload[str(k)] = PlayerInfo(
-                    id=meta.id, name="Connect 4 AI", type="ai", level=None, depth=None
+                    id=meta.id, name="IA Puissance 4", type="ai", level=None, depth=None
                 )
             else:
                 players_payload[str(k)] = meta
@@ -354,7 +533,8 @@ def _build_session(
     on_finish: Optional[Callable[[GameSession], None]] = None,
 ) -> GameSession:
     if config.mode == "human_vs_ai":
-        ai_label = "Connect 4 AI" if channel == "winaprize" else f"AI ({config.ai_level.capitalize()})"
+        lvl_fr = LEVEL_LABELS_FR.get(config.ai_level, config.ai_level.capitalize())
+        ai_label = "IA Puissance 4" if channel == "winaprize" else f"IA ({lvl_fr})"
         if config.human_player == 1:
             p1 = Player(config.username, 1, "X")
             p2 = AI(ai_label, 2, "O", depth=config.ai_depth, level=config.ai_level)
@@ -372,12 +552,12 @@ def _build_session(
     elif config.mode == "player_vs_player":
         p1_name = config.username
         if waiting_for_opponent:
-            p2_name = "Waiting for friend…"
+            p2_name = "En attente d'un ami…"
         else:
             p2_name = (
                 config.player2_name
                 if config.player2_name != config.username
-                else f"{config.player2_name} (P2)"
+                else f"{config.player2_name} (J2)"
             )
         p1 = Player(p1_name, 1, "X")
         p2 = Player(p2_name, 2, "O")
@@ -386,8 +566,10 @@ def _build_session(
     else:
         lvl1 = config.ai_level
         lvl2 = config.ai2_level or config.ai_level
-        p1 = AI(f"AI 1 ({lvl1.capitalize()})", 1, "X", depth=config.ai_depth, level=lvl1)
-        p2 = AI(f"AI 2 ({lvl2.capitalize()})", 2, "O", depth=config.ai2_depth, level=lvl2)
+        l1_fr = LEVEL_LABELS_FR.get(lvl1, lvl1.capitalize())
+        l2_fr = LEVEL_LABELS_FR.get(lvl2, lvl2.capitalize())
+        p1 = AI(f"IA 1 ({l1_fr})", 1, "X", depth=config.ai_depth, level=lvl1)
+        p2 = AI(f"IA 2 ({l2_fr})", 2, "O", depth=config.ai2_depth, level=lvl2)
         meta1 = PlayerInfo(id=1, name=p1.name, type="ai", level=lvl1, depth=config.ai_depth)
         meta2 = PlayerInfo(id=2, name=p2.name, type="ai", level=lvl2, depth=config.ai2_depth)
 
@@ -429,15 +611,17 @@ class SessionManager:
     ):
         self.db = db
         self._sessions: dict[str, GameSession] = {}
-        self._rooms: dict[str, str] = {}  # HEXCODE -> session_id
+        self._rooms: dict[str, str] = {}
         self._lock = threading.Lock()
         self._ttl_seconds = ttl_seconds
         self._max_sessions = max_sessions
+
         self._admin_subs: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = set()
         self._room_subs: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]] = {}
+        self._session_subs: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]] = {}
         self._sub_lock = threading.Lock()
 
-    # --- Pub/Sub (Admin & Online Rooms) ---
+    # --- Pub/Sub (Admin, Online Rooms, and Individual Live Sessions for WebSockets & SSE) ---
 
     def subscribe_admin(
         self, loop: asyncio.AbstractEventLoop
@@ -469,6 +653,24 @@ class SessionManager:
                     subs.discard(entry)
                     if not subs:
                         self._room_subs.pop(code, None)
+
+        return queue, unsubscribe
+
+    def subscribe_session(
+        self, session_id: str, loop: asyncio.AbstractEventLoop
+    ) -> tuple[asyncio.Queue, Callable[[], None]]:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=60)
+        entry = (loop, queue)
+        with self._sub_lock:
+            self._session_subs.setdefault(session_id, set()).add(entry)
+
+        def unsubscribe():
+            with self._sub_lock:
+                subs = self._session_subs.get(session_id)
+                if subs:
+                    subs.discard(entry)
+                    if not subs:
+                        self._session_subs.pop(session_id, None)
 
         return queue, unsubscribe
 
@@ -508,16 +710,23 @@ class SessionManager:
         if subs:
             self._push_to_subs(subs, event_type, payload)
 
+    def _broadcast_session(self, session_id: str, event_type: str, payload: Any):
+        with self._sub_lock:
+            subs = list(self._session_subs.get(session_id, ()))
+        if subs:
+            self._push_to_subs(subs, event_type, payload)
+
     def _on_session_change(self, session: GameSession):
         with session.lock:
             admin_snapshot = session.to_response(for_admin=True).model_dump()
+            player_snapshot = session.to_response(for_admin=False).model_dump()
             room_code = session.room_code
-            room_snapshot = (
-                session.to_response(for_admin=False).model_dump() if room_code else None
-            )
+            sid = session.session_id
+
         self._broadcast_admin("session_update", admin_snapshot)
-        if room_code and room_snapshot is not None:
-            self._broadcast_room(room_code, "room_update", room_snapshot)
+        self._broadcast_session(sid, "game_update", player_snapshot)
+        if room_code:
+            self._broadcast_room(room_code, "room_update", player_snapshot)
 
     def _on_session_finish(self, session: GameSession):
         if self.db is None:
@@ -608,7 +817,7 @@ class SessionManager:
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
-                raise GameError(f"Game session '{session_id}' not found.", status_code=404)
+                raise GameError(f"Session '{session_id}' introuvable.", status_code=404)
             session.updated_at = time.time()
             return session
 
@@ -620,7 +829,7 @@ class SessionManager:
     ) -> GameStateResponse:
         existing = self.get(session_id)
         if existing.channel == "online_pvp":
-            raise GameError("Use /api/rooms/{code}/rematch for online rooms.", status_code=400)
+            raise GameError("Utilisez /api/rooms/{code}/rematch pour les salons en ligne.", status_code=400)
 
         merged = existing.config.model_dump()
 
@@ -689,12 +898,34 @@ class SessionManager:
         with self._lock:
             sess = self._sessions.pop(session_id, None)
             if sess is None:
-                raise GameError(f"Game session '{session_id}' not found.", status_code=404)
+                raise GameError(f"Session '{session_id}' introuvable.", status_code=404)
             if sess.room_code:
                 self._rooms.pop(sess.room_code, None)
         self._broadcast_admin("session_delete", {"session_id": session_id})
 
-    # --- Live Mid-Game Difficulty Control ---
+    # --- Live Mid-Game Modification (Difficulty, Board Size, Alignment, Undo) ---
+
+    def update_session_live_config(
+        self,
+        session_id: str,
+        ai_level: Optional[str] = None,
+        ai2_level: Optional[str] = None,
+        rows: Optional[int] = None,
+        cols: Optional[int] = None,
+        align: Optional[int] = None,
+        allow_undo: Optional[bool] = None,
+    ) -> GameStateResponse:
+        session = self.get(session_id)
+        session.apply_live_config(
+            ai_level=ai_level,
+            ai2_level=ai2_level,
+            rows=rows,
+            cols=cols,
+            align=align,
+            allow_undo=allow_undo,
+        )
+        with session.lock:
+            return session.to_response(for_admin=True)
 
     def update_session_difficulty(
         self, session_id: str, ai_level: str, ai2_level: Optional[str] = None
@@ -704,15 +935,33 @@ class SessionManager:
         with session.lock:
             return session.to_response(for_admin=True)
 
-    def update_winaprize_live_difficulty(self, ai_level: str) -> int:
+    def update_winaprize_live_sessions(
+        self,
+        ai_level: str,
+        rows: int,
+        cols: int,
+        align: int,
+        allow_undo: bool,
+    ) -> int:
         with self._lock:
             live_prize = [
                 sess
                 for sess in self._sessions.values()
                 if sess.channel == "winaprize" and sess.status == "playing"
             ]
+
+        # Validate EVERY active /winaprize game first so no partial update occurs on collision
         for sess in live_prize:
-            sess.set_ai_level(ai_level)
+            sess.check_resize_possible(rows, cols, align)
+
+        for sess in live_prize:
+            sess.apply_live_config(
+                ai_level=ai_level,
+                rows=rows,
+                cols=cols,
+                align=align,
+                allow_undo=allow_undo,
+            )
         return len(live_prize)
 
     def count_live_winaprize(self) -> int:
@@ -737,7 +986,7 @@ class SessionManager:
         with self._lock:
             sid = self._rooms.get(code)
             if sid is None or sid not in self._sessions:
-                raise GameError(f"Room #{code} not found or expired.", status_code=404)
+                raise GameError(f"Salon #{code} introuvable ou expiré.", status_code=404)
             session = self._sessions[sid]
             session.updated_at = time.time()
             return session
@@ -760,7 +1009,7 @@ class SessionManager:
             starting_player=starter,
             random_start=was_random,
             username=username,
-            player2_name="Waiting for friend…",
+            player2_name="En attente d'un ami…",
         )
         session_id = str(uuid.uuid4())
         p1_token = secrets.token_urlsafe(24)
@@ -790,7 +1039,7 @@ class SessionManager:
         self, room_code: str, username: str
     ) -> tuple[GameStateResponse, Optional[str], int]:
         session = self.get_room(room_code)
-        cleaned = (username or "Guest").strip()[:32] or "Guest"
+        cleaned = (username or "Invité").strip()[:32] or "Invité"
 
         with session.lock:
             if session.waiting_for_opponent and 2 not in session.player_tokens:
@@ -798,7 +1047,7 @@ class SessionManager:
                 p2_display = (
                     cleaned
                     if cleaned != session.player_meta[1].name
-                    else f"{cleaned} (P2)"
+                    else f"{cleaned} (J2)"
                 )
                 session.player_tokens[2] = p2_token
                 session.config.player2_name = p2_display
@@ -825,10 +1074,10 @@ class SessionManager:
         session = self.get_room(room_code)
         with session.lock:
             if session.waiting_for_opponent:
-                raise GameError("Waiting for your friend to join first.", status_code=409)
+                raise GameError("En attente que votre ami rejoigne la partie.", status_code=409)
             expected_token = session.player_tokens.get(session.c4.current_player)
             if not expected_token or not secrets.compare_digest(player_token, expected_token):
-                raise GameError("It is not your turn (or you are spectating).", status_code=403)
+                raise GameError("Ce n'est pas votre tour (ou vous êtes spectateur).", status_code=403)
         applied = session.play_human_move(col=col, auto_ai_reply=False)
         with session.lock:
             return session.to_response(moves_applied=applied)
@@ -840,9 +1089,9 @@ class SessionManager:
         with session.lock:
             valid_tokens = list(session.player_tokens.values())
             if not any(secrets.compare_digest(player_token, tok) for tok in valid_tokens):
-                raise GameError("Only players in this room can start a rematch.", status_code=403)
+                raise GameError("Seuls les joueurs du salon peuvent lancer une revanche.", status_code=403)
             if session.waiting_for_opponent:
-                raise GameError("Waiting for opponent to join first.", status_code=409)
+                raise GameError("En attente que votre ami rejoigne d'abord.", status_code=409)
 
             next_starter = (
                 random.choice([1, 2])

@@ -4,24 +4,24 @@
   let reversedMoves = $derived([...moves].reverse());
 
   function strategyLabel(strategy) {
-    if (strategy === 'minimax') return 'Alpha-Beta';
-    if (strategy === 'tree') return 'Tree';
-    if (strategy === 'heuristic') return 'Heuristic';
-    return 'Fallback';
+    if (strategy === 'minimax') return 'Alpha-Bêta';
+    if (strategy === 'tree') return 'Arbre';
+    if (strategy === 'heuristic') return 'Heuristique';
+    return 'Secours';
   }
 </script>
 
 <div class="flex flex-col rounded-2xl border border-slate-800/90 bg-slate-900/70 backdrop-blur">
   <div class="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
-    <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-300">Move History</h2>
+    <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-300">Historique des coups</h2>
     <span class="font-mono text-xs text-slate-500">
-      {moves.length} {moves.length === 1 ? 'ply' : 'plies'}
+      {moves.length} {moves.length <= 1 ? 'coup' : 'coups'}
     </span>
   </div>
 
   {#if moves.length === 0}
     <p class="px-4 py-6 text-center text-xs text-slate-500">
-      No moves played yet. Drop a disc to begin.
+      Aucun coup joué. Cliquez sur une colonne pour commencer.
     </p>
   {:else}
     <ol class="thin-scroll max-h-56 divide-y divide-slate-800/60 overflow-y-auto px-2 py-1">
@@ -47,7 +47,7 @@
               </span>
             {/if}
             <span class="font-mono text-[11px] text-slate-400">
-              C{m.col + 1} · R{m.row + 1}
+              C{m.col + 1} · L{m.row + 1}
             </span>
           </div>
         </li>

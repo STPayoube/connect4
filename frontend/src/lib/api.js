@@ -9,12 +9,13 @@ export class ApiError extends Error {
 }
 
 async function request(path, options = {}) {
+  const { headers: extraHeaders, ...restOptions } = options;
   const res = await fetch(`${API_BASE}${path}`, {
+    ...restOptions,
     headers: {
       'Content-Type': 'application/json',
-      ...(options.headers || {}),
+      ...(extraHeaders || {}),
     },
-    ...options,
   });
 
   if (res.status === 204) {
@@ -34,11 +35,32 @@ async function request(path, options = {}) {
         ? data.detail
         : Array.isArray(data?.detail)
           ? data.detail.map((d) => d.msg).join(', ')
-          : `Request failed with status ${res.status}`;
+          : `Erreur serveur (${res.status})`;
     throw new ApiError(detail, res.status);
   }
 
   return data;
+}
+
+function buildWsUrl(wsPath) {
+  if (typeof window === 'undefined') return '';
+  if (API_BASE.startsWith('http://') || API_BASE.startsWith('https://')) {
+    return `${API_BASE.replace(/^http/, 'ws')}${wsPath}`;
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}${API_BASE}${wsPath}`;
+}
+
+export function getGameWsUrl(sessionId) {
+  return buildWsUrl(`/ws/games/${encodeURIComponent(sessionId)}`);
+}
+
+export function getRoomWsUrl(code) {
+  return buildWsUrl(`/ws/rooms/${encodeURIComponent(code)}`);
+}
+
+export function getAdminWsUrl(token) {
+  return buildWsUrl(`/ws/admin?token=${encodeURIComponent(token)}`);
 }
 
 // --- Standard Games ---
@@ -178,6 +200,14 @@ export function adminUpdateSessionDifficulty(token, sessionId, aiLevel, ai2Level
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ ai_level: aiLevel, ...(ai2Level ? { ai2_level: ai2Level } : {}) }),
+  });
+}
+
+export function adminUpdateSessionLiveConfig(token, sessionId, config) {
+  return request(`/admin/sessions/${encodeURIComponent(sessionId)}/live-config`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(config),
   });
 }
 

@@ -11,14 +11,14 @@
   let startingPlayer = $state('1');
   let aiLevel = $state('medium');
   let ai2Level = $state('medium');
-  let username = $state('Guest');
-  let player2Name = $state('Player 2');
+  let username = $state('Invité');
+  let player2Name = $state('Joueur 2');
 
   const presets = [
-    { name: 'Classic 6×7', rows: 6, cols: 7, align: 4 },
+    { name: 'Classique 6×7', rows: 6, cols: 7, align: 4 },
     { name: 'WeakC4 7×8', rows: 7, cols: 8, align: 4 },
-    { name: 'Blitz 5×6', rows: 5, cols: 6, align: 4 },
-    { name: 'Connect 5', rows: 8, cols: 9, align: 5 },
+    { name: 'Rapide 5×6', rows: 5, cols: 6, align: 4 },
+    { name: 'Puissance 5', rows: 8, cols: 9, align: 5 },
   ];
 
   let wasOpen = false;
@@ -33,8 +33,8 @@
       startingPlayer = config.random_start ? 'random' : String(config.starting_player);
       aiLevel = config.ai_level || 'medium';
       ai2Level = config.ai2_level || config.ai_level || 'medium';
-      username = config.username || 'Guest';
-      player2Name = config.player2_name || 'Player 2';
+      username = config.username || 'Invité';
+      player2Name = config.player2_name || 'Joueur 2';
     }
     wasOpen = open;
   });
@@ -66,8 +66,8 @@
       random_start: isRandom,
       ai_level: aiLevel,
       ai2_level: mode === 'ai_vs_ai' ? ai2Level : aiLevel,
-      username: username.trim() || 'Guest',
-      player2_name: player2Name.trim() || 'Player 2',
+      username: username.trim() || 'Invité',
+      player2_name: player2Name.trim() || 'Joueur 2',
     });
   }
 </script>
@@ -84,16 +84,16 @@
     >
       <div class="flex items-center justify-between border-b border-slate-800 px-5 py-4">
         <div>
-          <h2 id="settings-title" class="text-base font-bold text-slate-100">Game Settings</h2>
+          <h2 id="settings-title" class="text-base font-bold text-slate-100">Paramètres de la partie</h2>
           <p class="text-xs text-slate-400">
-            Configure board dimensions, mode, players, and AI difficulty level
+            Configurez la grille, le mode, les joueurs et la difficulté de l'IA
           </p>
         </div>
         <button
           type="button"
           onclick={onClose}
           class="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-          aria-label="Close settings"
+          aria-label="Fermer les paramètres"
         >
           ✕
         </button>
@@ -103,13 +103,13 @@
         <!-- Mode -->
         <div>
           <span class="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-400">
-            Game Mode
+            Mode de jeu
           </span>
           <div class="grid grid-cols-3 gap-2">
             {#each [
-              { id: 'human_vs_ai', title: 'Human vs AI', sub: 'Challenge AI' },
-              { id: 'player_vs_player', title: 'Player vs Player', sub: 'Local 2-Player' },
-              { id: 'ai_vs_ai', title: 'AI vs AI', sub: 'Watch & step' },
+              { id: 'human_vs_ai', title: "Contre l'IA", sub: "Défier l'IA" },
+              { id: 'player_vs_player', title: 'Joueur vs Joueur', sub: '2 joueurs local' },
+              { id: 'ai_vs_ai', title: 'IA vs IA', sub: 'Observer / pas-à-pas' },
             ] as opt}
               <button
                 type="button"
@@ -125,18 +125,18 @@
           </div>
         </div>
 
-        <!-- Usernames -->
+        <!-- Pseudos -->
         <div class="grid grid-cols-1 gap-3 {mode === 'player_vs_player' ? 'sm:grid-cols-2' : ''}">
           <div>
             <label for="username-input" class="mb-1.5 block text-xs font-medium text-slate-300">
-              {mode === 'player_vs_player' ? 'Player 1 Username (Red)' : 'Your Username'}
+              {mode === 'player_vs_player' ? 'Pseudo Joueur 1 (Rouge)' : 'Votre pseudo'}
             </label>
             <input
               id="username-input"
               type="text"
               maxlength="32"
               bind:value={username}
-              placeholder="Enter username"
+              placeholder="Entrez votre pseudo"
               class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
             />
           </div>
@@ -144,26 +144,26 @@
           {#if mode === 'player_vs_player'}
             <div>
               <label for="p2-input" class="mb-1.5 block text-xs font-medium text-slate-300">
-                Player 2 Username (Gold)
+                Pseudo Joueur 2 (Or)
               </label>
               <input
                 id="p2-input"
                 type="text"
                 maxlength="32"
                 bind:value={player2Name}
-                placeholder="Player 2"
+                placeholder="Joueur 2"
                 class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
               />
             </div>
           {/if}
         </div>
 
-        <!-- AI Difficulty Levels -->
+        <!-- Niveaux IA -->
         {#if mode !== 'player_vs_player'}
           <div class="space-y-3">
             <div>
               <span class="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                {mode === 'ai_vs_ai' ? 'AI 1 Level (Coral Red)' : 'AI Difficulty Level'}
+                {mode === 'ai_vs_ai' ? 'Niveau IA 1 (Rouge Corail)' : "Niveau de difficulté de l'IA"}
               </span>
               <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {#each LEVELS as lvl}
@@ -184,7 +184,7 @@
             {#if mode === 'ai_vs_ai'}
               <div>
                 <span class="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  AI 2 Level (Amber Gold)
+                  Niveau IA 2 (Or Ambré)
                 </span>
                 <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {#each LEVELS as lvl}
@@ -205,44 +205,44 @@
           </div>
         {/if}
 
-        <!-- Seat & Starting Player -->
+        <!-- Couleur & Premier joueur -->
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {#if mode === 'human_vs_ai'}
             <div>
               <label for="human-seat" class="mb-1.5 block text-xs font-medium text-slate-300">
-                Play As
+                Jouer en tant que
               </label>
               <select
                 id="human-seat"
                 bind:value={humanPlayer}
                 class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
               >
-                <option value={1}>Player 1 (Coral Red)</option>
-                <option value={2}>Player 2 (Amber Gold)</option>
+                <option value={1}>Joueur 1 (Rouge Corail)</option>
+                <option value={2}>Joueur 2 (Or Ambré)</option>
               </select>
             </div>
           {/if}
 
           <div class={mode !== 'human_vs_ai' ? 'sm:col-span-2' : ''}>
             <label for="starter-select" class="mb-1.5 block text-xs font-medium text-slate-300">
-              Starting Player
+              Premier joueur
             </label>
             <select
               id="starter-select"
               bind:value={startingPlayer}
               class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
             >
-              <option value="1">Player 1 (Coral Red)</option>
-              <option value="2">Player 2 (Amber Gold)</option>
-              <option value="random">Random (Coin Toss)</option>
+              <option value="1">Joueur 1 (Rouge Corail)</option>
+              <option value="2">Joueur 2 (Or Ambré)</option>
+              <option value="random">Aléatoire (Tirage au sort)</option>
             </select>
           </div>
         </div>
 
-        <!-- Quick Presets -->
+        <!-- Préréglages de grille -->
         <div>
           <span class="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-400">
-            Board Presets
+            Grilles prédéfinies
           </span>
           <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {#each presets as preset}
@@ -262,11 +262,11 @@
           </div>
         </div>
 
-        <!-- Grid Dimensions -->
+        <!-- Dimensions -->
         <div class="grid grid-cols-3 gap-3">
           <div>
             <label for="rows-input" class="mb-1 flex justify-between text-xs text-slate-300">
-              <span>Rows</span>
+              <span>Lignes</span>
               <span class="font-mono text-indigo-300">{rows}</span>
             </label>
             <input
@@ -281,7 +281,7 @@
 
           <div>
             <label for="cols-input" class="mb-1 flex justify-between text-xs text-slate-300">
-              <span>Columns</span>
+              <span>Colonnes</span>
               <span class="font-mono text-indigo-300">{cols}</span>
             </label>
             <input
@@ -296,7 +296,7 @@
 
           <div>
             <label for="align-input" class="mb-1 flex justify-between text-xs text-slate-300">
-              <span>Align</span>
+              <span>Alignement</span>
               <span class="font-mono text-indigo-300">{align}</span>
             </label>
             <input
@@ -310,20 +310,20 @@
           </div>
         </div>
 
-        <!-- Footer -->
+        <!-- Pied de modale -->
         <div class="flex items-center justify-end gap-2 border-t border-slate-800 pt-4">
           <button
             type="button"
             onclick={onClose}
             class="rounded-xl border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800"
           >
-            Cancel
+            Annuler
           </button>
           <button
             type="submit"
             class="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500"
           >
-            Start Game
+            Lancer la partie
           </button>
         </div>
       </form>

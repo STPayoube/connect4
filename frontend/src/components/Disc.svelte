@@ -43,7 +43,7 @@
   {#if isLastMove && !isWinning}
     <div
       class="pointer-events-none absolute inset-0 flex items-center justify-center"
-      title="Last played move"
+      title="Dernier coup joué"
     >
       <span
         class="h-2.5 w-2.5 rounded-full bg-white shadow-[0_0_10px_2px_rgba(255,255,255,0.9)] ring-2 ring-slate-900/60"

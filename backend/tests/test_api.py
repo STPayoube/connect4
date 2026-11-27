@@ -288,3 +288,129 @@ def test_admin_auth_and_logout():
     headers = _admin_headers()
     assert client.post("/api/admin/logout", headers=headers).status_code == 204
     assert client.get("/api/admin/sessions", headers=headers).status_code == 401
+
+
+def test_live_board_resize_and_collision_error():
+    headers = _admin_headers()
+
+    # Start a /winaprize game on 6x7
+    client.put(
+        "/api/admin/winaprize/config",
+        headers=headers,
+        json={
+            "enabled": True,
+            "rows": 6,
+            "cols": 7,
+            "align": 4,
+            "ai_level": "medium",
+            "starting_player": 1,
+            "human_player": 1,
+            "random_start": False,
+            "allow_undo": False,
+            "title": "Défi",
+            "subtitle": "Gagnez !",
+            "apply_to_live_games": False,
+        },
+    )
+    game = client.post("/api/winaprize/games", json={"username": "ResizePlayer"}).json()
+    sid = game["session_id"]
+
+    # Place a checker in column index 6 (7th column)
+    client.post(f"/api/games/{sid}/move", json={"col": 6, "auto_ai_reply": False})
+
+    # Shrinking to 6 columns via live-config must fail with 409 collision!
+    conflict = client.patch(
+        f"/api/admin/sessions/{sid}/live-config",
+        headers=headers,
+        json={"cols": 6},
+    )
+    assert conflict.status_code == 409
+    assert "colonne" in conflict.json()["detail"].lower()
+
+    # Shrinking via /winaprize global PUT with apply_to_live_games=True must also fail with 409
+    global_conflict = client.put(
+        "/api/admin/winaprize/config",
+        headers=headers,
+        json={
+            "enabled": True,
+            "rows": 6,
+            "cols": 5,
+            "align": 4,
+            "ai_level": "hard",
+            "starting_player": 1,
+            "human_player": 1,
+            "random_start": False,
+            "allow_undo": False,
+            "title": "Défi",
+            "subtitle": "Gagnez !",
+            "apply_to_live_games": True,
+        },
+    )
+    assert global_conflict.status_code == 409
+
+    # Growing to 8x9 must succeed and preserve the checker on the bottom row (row 7, col 6)
+    grown = client.patch(
+        f"/api/admin/sessions/{sid}/live-config",
+        headers=headers,
+        json={"rows": 8, "cols": 9, "align": 4, "ai_level": "hard"},
+    )
+    assert grown.status_code == 200
+    g_data = grown.json()
+    assert len(g_data["grid"]) == 8
+    assert len(g_data["grid"][0]) == 9
+    assert g_data["grid"][7][6] == 1
+    assert g_data["config"]["ai_level"] == "hard"
+
+    # Clean up session so subsequent tests stay isolated
+    client.delete(f"/api/admin/sessions/{sid}", headers=headers)
+
+
+def test_websockets_game_room_and_admin():
+    headers = _admin_headers()
+
+    # 1. Live AI Game WebSocket receives live admin board resize & processes human+AI moves
+    g = client.post("/api/games", json={"username": "WsPlayer", "ai_level": "easy"}).json()
+    sid = g["session_id"]
+
+    with client.websocket_connect(f"/api/ws/games/{sid}") as ws:
+        init_msg = ws.receive_json()
+        assert init_msg["event"] == "init"
+        assert init_msg["data"]["session_id"] == sid
+
+        # Admin resizes live over HTTP -> player receives instant WebSocket push
+        client.patch(
+            f"/api/admin/sessions/{sid}/live-config",
+            headers=headers,
+            json={"rows": 7, "cols": 8, "ai_level": "hard"},
+        )
+        upd_msg = ws.receive_json()
+        assert upd_msg["event"] == "game_update"
+        assert upd_msg["data"]["config"]["rows"] == 7
+        assert upd_msg["data"]["config"]["cols"] == 8
+
+        # Play a move directly over WebSocket (triggers human move + AI reply)
+        ws.send_json({"type": "human_move", "col": 3, "auto_ai_reply": True})
+        seen_plies = 0
+        for _ in range(6):
+            msg = ws.receive_json()
+            if msg["event"] == "game_update":
+                seen_plies = len(msg["data"]["move_history"])
+                if seen_plies >= 2:
+                    break
+        assert seen_plies == 2
+
+    # 2. Online Friend Room WebSocket
+    room = client.post("/api/rooms", json={"username": "WsHost"}).json()
+    code = room["room_code"]
+    p1_tok = room["player_token"]
+    p2_join = client.post(f"/api/rooms/{code}/join", json={"username": "WsFriend"}).json()
+    assert p2_join["seat"] == 2
+
+    with client.websocket_connect(f"/api/ws/rooms/{code}") as rws:
+        r_init = rws.receive_json()
+        assert r_init["event"] == "init"
+        rws.send_json({"type": "move", "col": 2, "player_token": p1_tok})
+        r_upd = rws.receive_json()
+        assert r_upd["event"] == "room_update"
+        assert len(r_upd["data"]["move_history"]) == 1
+

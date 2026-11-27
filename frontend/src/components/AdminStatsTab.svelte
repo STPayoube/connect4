@@ -20,7 +20,6 @@
   let outcomeFilter = $state('all');
   let searchQuery = $state('');
 
-  // Replay modal state
   let replayRecord = $state(null);
   let replayPly = $state(0);
 
@@ -63,7 +62,7 @@
       stats = s;
       history = h;
     } catch (err) {
-      error = err.message || 'Failed to load statistics.';
+      error = err.message || 'Impossible de charger les statistiques.';
     } finally {
       loading = false;
     }
@@ -79,7 +78,7 @@
         limit: 60,
       });
     } catch (err) {
-      error = err.message || 'Failed to load game history.';
+      error = err.message || "Impossible de charger l'historique.";
     }
   }
 
@@ -89,7 +88,7 @@
       replayRecord = rec;
       replayPly = rec.move_history?.length || 0;
     } catch (err) {
-      error = err.message || 'Could not load replay.';
+      error = err.message || 'Impossible de charger le replay.';
     }
   }
 
@@ -98,12 +97,12 @@
       await adminDeleteHistoryRecord(token, recordId);
       await loadAll();
     } catch (err) {
-      error = err.message || 'Could not delete record.';
+      error = err.message || 'Impossible de supprimer cette archive.';
     }
   }
 
   function formatDate(ts) {
-    return new Date(ts * 1000).toLocaleString();
+    return new Date(ts * 1000).toLocaleString('fr-FR');
   }
 
   function channelBadge(ch) {
@@ -113,8 +112,8 @@
   }
 
   function channelLabel(ch) {
-    if (ch === 'winaprize') return 'Win a Prize';
-    if (ch === 'online_pvp') return 'Online Friend';
+    if (ch === 'winaprize') return 'Défi Prix';
+    if (ch === 'online_pvp') return 'Ami en ligne';
     return 'Normal';
   }
 
@@ -136,16 +135,16 @@
   {/if}
 
   {#if loading && !stats}
-    <div class="py-12 text-center text-sm text-slate-400">Loading stored statistics…</div>
+    <div class="py-12 text-center text-sm text-slate-400">Chargement des statistiques…</div>
   {:else if stats}
-    <!-- Overall Summary -->
+    <!-- Résumé global -->
     <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
       <div class="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
-        <div class="text-xs text-slate-400">Total Stored Games</div>
+        <div class="text-xs text-slate-400">Parties archivées</div>
         <div class="mt-1 font-mono text-2xl font-bold text-white">{stats.overall.total_games}</div>
       </div>
       <div class="rounded-2xl border border-amber-500/35 bg-amber-950/20 p-4">
-        <div class="text-xs text-amber-300">Prize Winners (/winaprize)</div>
+        <div class="text-xs text-amber-300">Gagnants (/winaprize)</div>
         <div class="mt-1 font-mono text-2xl font-bold text-amber-300">
           {stats.winaprize.human_wins}
           <span class="text-xs font-normal text-amber-200/70">
@@ -154,7 +153,7 @@
         </div>
       </div>
       <div class="rounded-2xl border border-sky-500/30 bg-sky-950/20 p-4">
-        <div class="text-xs text-sky-300">Normal Mode Human Wins</div>
+        <div class="text-xs text-sky-300">Victoires (Mode Normal)</div>
         <div class="mt-1 font-mono text-2xl font-bold text-sky-300">
           {stats.normal.human_wins}
           <span class="text-xs font-normal text-sky-200/70">
@@ -163,44 +162,44 @@
         </div>
       </div>
       <div class="rounded-2xl border border-emerald-500/30 bg-emerald-950/20 p-4">
-        <div class="text-xs text-emerald-300">Online Friend Matches</div>
+        <div class="text-xs text-emerald-300">Parties entre amis</div>
         <div class="mt-1 font-mono text-2xl font-bold text-emerald-300">
           {stats.online_pvp.total_games}
         </div>
       </div>
     </div>
 
-    <!-- Side-by-side: Win a Prize vs Normal Stats -->
+    <!-- Comparatif Défi /winaprize vs Mode Normal -->
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      <!-- Win a Prize Breakdown -->
+      <!-- Stats /winaprize -->
       <section class="rounded-2xl border border-amber-500/30 bg-slate-900/80 p-5 space-y-4">
         <div class="flex items-center justify-between">
           <div>
-            <h2 class="text-sm font-bold text-amber-200">/winaprize Challenge Stats</h2>
+            <h2 class="text-sm font-bold text-amber-200">Statistiques /winaprize</h2>
             <p class="text-xs text-slate-400">
-              {stats.winaprize.unique_players} unique players · avg {stats.winaprize.avg_plies} plies
+              {stats.winaprize.unique_players} joueurs uniques · moy. {stats.winaprize.avg_plies} coups
             </p>
           </div>
           <span class="rounded-full bg-amber-500/20 px-2.5 py-1 font-mono text-xs font-bold text-amber-300">
-            {stats.winaprize.win_rate_pct}% win rate
+            {stats.winaprize.win_rate_pct}% de victoires
           </span>
         </div>
 
         <div class="grid grid-cols-3 gap-2 text-center text-xs">
           <div class="rounded-xl bg-slate-950/70 p-2.5">
-            <div class="text-slate-400">Player Wins</div>
+            <div class="text-slate-400">Victoires joueur</div>
             <div class="mt-0.5 font-mono text-lg font-bold text-emerald-300">
               {stats.winaprize.human_wins}
             </div>
           </div>
           <div class="rounded-xl bg-slate-950/70 p-2.5">
-            <div class="text-slate-400">AI Wins</div>
+            <div class="text-slate-400">Victoires IA</div>
             <div class="mt-0.5 font-mono text-lg font-bold text-rose-300">
               {stats.winaprize.ai_wins}
             </div>
           </div>
           <div class="rounded-xl bg-slate-950/70 p-2.5">
-            <div class="text-slate-400">Draws</div>
+            <div class="text-slate-400">Matchs nuls</div>
             <div class="mt-0.5 font-mono text-lg font-bold text-slate-300">
               {stats.winaprize.draws}
             </div>
@@ -210,29 +209,28 @@
         {#if stats.winaprize.by_level.length > 0}
           <div class="space-y-1.5">
             <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              By AI Level
+              Par niveau de l'IA
             </div>
             {#each stats.winaprize.by_level as row}
               <div class="flex items-center justify-between rounded-lg bg-slate-950/60 px-3 py-1.5 text-xs">
-                <span class="font-semibold capitalize text-slate-200">{formatLevel(row.level)}</span>
+                <span class="font-semibold text-slate-200">{formatLevel(row.level)}</span>
                 <span class="font-mono text-slate-400">
-                  <span class="text-emerald-300">{row.human_wins}W</span> ·
-                  <span class="text-rose-300">{row.ai_wins}L</span> ·
-                  {row.draws}D ({row.win_rate_pct}%)
+                  <span class="text-emerald-300">{row.human_wins}V</span> ·
+                  <span class="text-rose-300">{row.ai_wins}D</span> ·
+                  {row.draws}N ({row.win_rate_pct}%)
                 </span>
               </div>
             {/each}
           </div>
         {/if}
 
-        <!-- Recent Prize Winners -->
         <div>
           <div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-amber-300/90">
-            Recent Prize Winners
+            Derniers gagnants du défi
           </div>
           {#if stats.winaprize.recent_winners.length === 0}
             <p class="rounded-lg bg-slate-950/50 p-3 text-center text-xs text-slate-500">
-              No prize winners recorded yet.
+              Aucun gagnant enregistré pour le moment.
             </p>
           {:else}
             <div class="thin-scroll max-h-44 space-y-1 overflow-y-auto pr-1">
@@ -241,7 +239,7 @@
                   <div class="min-w-0">
                     <span class="font-semibold text-white">{w.username}</span>
                     <span class="ml-2 text-[10px] text-slate-400">
-                      vs {formatLevel(w.ai_level)} · {w.total_plies} plies
+                      vs {formatLevel(w.ai_level)} · {w.total_plies} coups
                     </span>
                   </div>
                   <button
@@ -249,7 +247,7 @@
                     onclick={() => openReplay(w.id)}
                     class="shrink-0 rounded bg-amber-500/20 px-2 py-0.5 text-[11px] font-semibold text-amber-200 hover:bg-amber-500/30"
                   >
-                    Replay
+                    Revoir
                   </button>
                 </div>
               {/each}
@@ -258,35 +256,35 @@
         </div>
       </section>
 
-      <!-- Normal Mode Breakdown -->
+      <!-- Stats Mode Normal & Classement -->
       <section class="rounded-2xl border border-slate-800 bg-slate-900/80 p-5 space-y-4">
         <div class="flex items-center justify-between">
           <div>
-            <h2 class="text-sm font-bold text-white">Normal Mode & Leaderboard</h2>
+            <h2 class="text-sm font-bold text-white">Mode normal & Classement</h2>
             <p class="text-xs text-slate-400">
-              Local PvP: {stats.normal.local_pvp_total} · AI vs AI: {stats.normal.ai_vs_ai_total}
+              JvJ local : {stats.normal.local_pvp_total} · IA vs IA : {stats.normal.ai_vs_ai_total}
             </p>
           </div>
           <span class="rounded-full bg-sky-500/20 px-2.5 py-1 font-mono text-xs font-bold text-sky-300">
-            {stats.normal.win_rate_pct}% vs AI
+            {stats.normal.win_rate_pct}% contre l'IA
           </span>
         </div>
 
         <div class="grid grid-cols-3 gap-2 text-center text-xs">
           <div class="rounded-xl bg-slate-950/70 p-2.5">
-            <div class="text-slate-400">Human Wins</div>
+            <div class="text-slate-400">Victoires humain</div>
             <div class="mt-0.5 font-mono text-lg font-bold text-emerald-300">
               {stats.normal.human_wins}
             </div>
           </div>
           <div class="rounded-xl bg-slate-950/70 p-2.5">
-            <div class="text-slate-400">AI Wins</div>
+            <div class="text-slate-400">Victoires IA</div>
             <div class="mt-0.5 font-mono text-lg font-bold text-rose-300">
               {stats.normal.ai_wins}
             </div>
           </div>
           <div class="rounded-xl bg-slate-950/70 p-2.5">
-            <div class="text-slate-400">Draws</div>
+            <div class="text-slate-400">Matchs nuls</div>
             <div class="mt-0.5 font-mono text-lg font-bold text-slate-300">
               {stats.normal.draws}
             </div>
@@ -296,29 +294,28 @@
         {#if stats.normal.by_level.length > 0}
           <div class="space-y-1.5">
             <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              Normal Mode By AI Level
+              Mode normal par niveau IA
             </div>
             {#each stats.normal.by_level as row}
               <div class="flex items-center justify-between rounded-lg bg-slate-950/60 px-3 py-1.5 text-xs">
-                <span class="font-semibold capitalize text-slate-200">{formatLevel(row.level)}</span>
+                <span class="font-semibold text-slate-200">{formatLevel(row.level)}</span>
                 <span class="font-mono text-slate-400">
-                  <span class="text-emerald-300">{row.human_wins}W</span> ·
-                  <span class="text-rose-300">{row.ai_wins}L</span> ·
-                  {row.draws}D ({row.win_rate_pct}%)
+                  <span class="text-emerald-300">{row.human_wins}V</span> ·
+                  <span class="text-rose-300">{row.ai_wins}D</span> ·
+                  {row.draws}N ({row.win_rate_pct}%)
                 </span>
               </div>
             {/each}
           </div>
         {/if}
 
-        <!-- Top Players -->
         <div>
           <div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-            Top Players
+            Meilleurs joueurs
           </div>
           {#if stats.top_players.length === 0}
             <p class="rounded-lg bg-slate-950/50 p-3 text-center text-xs text-slate-500">
-              No finished Human vs AI games yet.
+              Aucune partie contre l'IA terminée pour le moment.
             </p>
           {:else}
             <div class="thin-scroll max-h-44 space-y-1 overflow-y-auto pr-1">
@@ -331,11 +328,11 @@
                   <div class="flex items-center gap-2 font-mono text-[11px]">
                     {#if tp.prize_wins > 0}
                       <span class="rounded bg-amber-500/20 px-1.5 py-0.5 text-amber-300">
-                        {tp.prize_wins} Prize
+                        {tp.prize_wins} Prix
                       </span>
                     {/if}
-                    <span class="text-emerald-300">{tp.ai_wins_beaten}W</span>
-                    <span class="text-slate-500">/ {tp.games_played}G</span>
+                    <span class="text-emerald-300">{tp.ai_wins_beaten}V</span>
+                    <span class="text-slate-500">/ {tp.games_played}P</span>
                   </div>
                 </div>
               {/each}
@@ -345,12 +342,12 @@
       </section>
     </div>
 
-    <!-- Stored Game Archive Table -->
+    <!-- Historique archivé -->
     <section class="rounded-2xl border border-slate-800 bg-slate-900/80 p-5 space-y-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 class="text-sm font-bold text-white">Stored Game History ({history.total})</h2>
-          <p class="text-xs text-slate-400">Persisted in SQLite across restarts and deploys</p>
+          <h2 class="text-sm font-bold text-white">Historique enregistré ({history.total})</h2>
+          <p class="text-xs text-slate-400">Stocké dans SQLite de façon persistante sur votre VPS</p>
         </div>
 
         <div class="flex flex-wrap items-center gap-2">
@@ -359,10 +356,10 @@
             onchange={loadHistoryOnly}
             class="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200"
           >
-            <option value="all">All Channels</option>
-            <option value="winaprize">Win a Prize</option>
-            <option value="normal">Normal</option>
-            <option value="online_pvp">Online Friend</option>
+            <option value="all">Tous les canaux</option>
+            <option value="winaprize">Défi /winaprize</option>
+            <option value="normal">Mode normal</option>
+            <option value="online_pvp">Amis en ligne</option>
           </select>
 
           <select
@@ -370,17 +367,17 @@
             onchange={loadHistoryOnly}
             class="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200"
           >
-            <option value="all">All Outcomes</option>
-            <option value="win">Human Win</option>
-            <option value="loss">Human Loss</option>
-            <option value="draw">Draw</option>
+            <option value="all">Tous les résultats</option>
+            <option value="win">Victoire humain</option>
+            <option value="loss">Défaite humain</option>
+            <option value="draw">Match nul</option>
           </select>
 
           <input
             type="search"
             bind:value={searchQuery}
             oninput={loadHistoryOnly}
-            placeholder="Search username or #room…"
+            placeholder="Rechercher un pseudo ou #salon…"
             class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
           />
 
@@ -389,24 +386,24 @@
             onclick={loadAll}
             class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700"
           >
-            Refresh
+            Actualiser
           </button>
         </div>
       </div>
 
       {#if history.records.length === 0}
-        <p class="py-8 text-center text-xs text-slate-500">No finished games recorded yet.</p>
+        <p class="py-8 text-center text-xs text-slate-500">Aucune partie terminée enregistrée.</p>
       {:else}
         <div class="overflow-x-auto">
           <table class="w-full text-left text-xs">
             <thead class="border-b border-slate-800 text-[11px] uppercase text-slate-400">
               <tr>
-                <th class="py-2 pr-3">Channel</th>
-                <th class="py-2 pr-3">Players</th>
-                <th class="py-2 pr-3">Board / Level</th>
-                <th class="py-2 pr-3">Result</th>
-                <th class="py-2 pr-3">Moves</th>
-                <th class="py-2 pr-3">Finished</th>
+                <th class="py-2 pr-3">Canal</th>
+                <th class="py-2 pr-3">Joueurs</th>
+                <th class="py-2 pr-3">Grille / Niveau</th>
+                <th class="py-2 pr-3">Résultat</th>
+                <th class="py-2 pr-3">Coups</th>
+                <th class="py-2 pr-3">Terminée le</th>
                 <th class="py-2 text-right">Actions</th>
               </tr>
             </thead>
@@ -437,7 +434,7 @@
                   </td>
                   <td class="py-2.5 pr-3">
                     {#if rec.status === 'draw'}
-                      <span class="text-slate-400">Draw</span>
+                      <span class="text-slate-400">Match nul</span>
                     {:else}
                       <span
                         class="font-semibold {rec.human_outcome === 'win'
@@ -446,7 +443,7 @@
                             ? 'text-rose-300'
                             : 'text-indigo-300'}"
                       >
-                        {rec.winner_name} won
+                        {rec.winner_name} a gagné
                       </span>
                     {/if}
                   </td>
@@ -458,14 +455,14 @@
                       onclick={() => openReplay(rec.id)}
                       class="rounded bg-indigo-600/85 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-indigo-500"
                     >
-                      Replay
+                      Revoir
                     </button>
                     <button
                       type="button"
                       onclick={() => removeRecord(rec.id)}
                       class="ml-1 rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-400 hover:border-rose-500/50 hover:text-rose-300"
                     >
-                      Del
+                      Suppr.
                     </button>
                   </td>
                 </tr>
@@ -478,7 +475,7 @@
   {/if}
 </div>
 
-<!-- Move-by-Move Replay Modal -->
+<!-- Modale Replay coup par coup -->
 {#if replayRecord}
   <div
     class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
@@ -491,11 +488,11 @@
       <div class="flex items-center justify-between border-b border-slate-800 pb-3">
         <div>
           <h3 class="text-base font-bold text-white">
-            Replay: {replayRecord.username} vs {replayRecord.player2_name}
+            Replay : {replayRecord.username} vs {replayRecord.player2_name}
           </h3>
           <p class="text-xs text-slate-400">
             {channelLabel(replayRecord.channel)} · {replayRecord.rows}×{replayRecord.cols} ·
-            {replayRecord.status === 'draw' ? 'Draw' : `Winner: ${replayRecord.winner_name}`}
+            {replayRecord.status === 'draw' ? 'Match nul' : `Vainqueur : ${replayRecord.winner_name}`}
           </p>
         </div>
         <button
@@ -503,7 +500,7 @@
           onclick={() => (replayRecord = null)}
           class="rounded-lg border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-800"
         >
-          Close
+          Fermer
         </button>
       </div>
 
@@ -520,7 +517,6 @@
         animateDrops={false}
       />
 
-      <!-- Replay Scrubber Controls -->
       <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
         <div class="flex items-center gap-1.5">
           <button
@@ -529,7 +525,7 @@
             disabled={replayPly === 0}
             class="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-200 disabled:opacity-40"
           >
-            ⏮ Start
+            ⏮ Début
           </button>
           <button
             type="button"
@@ -537,7 +533,7 @@
             disabled={replayPly === 0}
             class="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-200 disabled:opacity-40"
           >
-            ◀ Prev
+            ◀ Préc.
           </button>
           <button
             type="button"
@@ -546,7 +542,7 @@
             disabled={replayPly >= (replayRecord.move_history?.length || 0)}
             class="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-200 disabled:opacity-40"
           >
-            Next ▶
+            Suiv. ▶
           </button>
           <button
             type="button"
@@ -554,15 +550,15 @@
             disabled={replayPly >= (replayRecord.move_history?.length || 0)}
             class="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-200 disabled:opacity-40"
           >
-            End ⏭
+            Fin ⏭
           </button>
         </div>
 
         <div class="font-mono text-xs text-slate-300">
-          Move {replayPly} / {replayRecord.move_history?.length || 0}
+          Coup {replayPly} / {replayRecord.move_history?.length || 0}
           {#if replayLastMove}
             <span class="ml-2 text-indigo-300">
-              ({replayLastMove.player_name} → C{replayLastMove.col + 1}·R{replayLastMove.row + 1})
+              ({replayLastMove.player_name} → C{replayLastMove.col + 1}·L{replayLastMove.row + 1})
             </span>
           {/if}
         </div>

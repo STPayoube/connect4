@@ -28,14 +28,14 @@
   );
 
   const modes = [
-    { id: 'human_vs_ai', label: 'vs AI' },
-    { id: 'player_vs_player', label: 'Player vs Player' },
-    { id: 'ai_vs_ai', label: 'AI vs AI' },
+    { id: 'human_vs_ai', label: "Contre l'IA" },
+    { id: 'player_vs_player', label: 'Joueur vs Joueur' },
+    { id: 'ai_vs_ai', label: 'IA vs IA' },
   ];
 </script>
 
 <div class="space-y-3">
-  <!-- Quick Mode Switcher -->
+  <!-- Sélecteur de mode -->
   <div class="grid grid-cols-3 gap-1 rounded-xl border border-slate-800 bg-slate-900/80 p-1">
     {#each modes as m}
       <button
@@ -50,33 +50,33 @@
     {/each}
   </div>
 
-  <!-- Quick Difficulty Picker in Human vs AI -->
+  <!-- Niveau IA rapide -->
   {#if isHumanVsAi && game}
     <div class="rounded-xl border border-slate-800/90 bg-slate-900/70 p-2.5">
       <div class="mb-1.5 flex items-center justify-between">
         <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-          AI Level
+          Niveau de l'IA
         </span>
-        <span class="text-[11px] text-slate-500">Starts fresh game</span>
+        <span class="text-[11px] text-slate-500">Nouvelle partie</span>
       </div>
       <div class="grid grid-cols-4 gap-1.5">
         {#each LEVELS as lvl}
           <button
             type="button"
             onclick={() => onQuickLevel(lvl.id)}
-            class="rounded-lg border px-1.5 py-1.5 text-center text-[11px] font-semibold transition {game
+            class="rounded-lg border px-1 py-1.5 text-center text-[11px] font-semibold transition {game
               .config.ai_level === lvl.id
               ? lvl.active
               : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:border-slate-700 hover:text-slate-200'}"
           >
-            {lvl.label}
+            {lvl.short}
           </button>
         {/each}
       </div>
     </div>
   {/if}
 
-  <!-- Play Against a Friend Online (QR Code) -->
+  <!-- Jouer avec un ami en ligne (QR Code + WebSocket) -->
   <button
     type="button"
     onclick={onPlayWithFriend}
@@ -88,10 +88,10 @@
       <rect x="3" y="14" width="7" height="7" rx="1" />
       <path stroke-linecap="round" d="M14 14h3v3h-3zM19 14v7M14 19h5" />
     </svg>
-    Play vs Friend Online (QR Code)
+    Jouer avec un ami (QR Code)
   </button>
 
-  <!-- Primary Actions -->
+  <!-- Actions principales -->
   <div class="grid grid-cols-2 gap-2">
     <button
       type="button"
@@ -105,14 +105,14 @@
           d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
         />
       </svg>
-      New Game
+      Nouvelle
     </button>
 
     <button
       type="button"
       onclick={onRandomStart}
       class="inline-flex items-center justify-center gap-1.5 rounded-xl border border-indigo-400/40 bg-indigo-500/15 px-3 py-2 text-sm font-semibold text-indigo-200 transition hover:bg-indigo-500/25 active:scale-[0.98]"
-      title="Start a new game with a random first player"
+      title="Lancer une partie avec un premier joueur aléatoire"
     >
       <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="3" y="3" width="18" height="18" rx="3" />
@@ -120,11 +120,11 @@
         <circle cx="15.5" cy="15.5" r="1.2" fill="currentColor" />
         <circle cx="12" cy="12" r="1.2" fill="currentColor" />
       </svg>
-      Random Start
+      Aléatoire
     </button>
   </div>
 
-  <!-- Secondary Actions -->
+  <!-- Actions secondaires -->
   <div class="flex items-center gap-2">
     <button
       type="button"
@@ -135,7 +135,7 @@
       <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M9 14l-4-4m0 0l4-4m-4 4h11a4 4 0 010 8h-1" />
       </svg>
-      Undo
+      Annuler
     </button>
 
     <button
@@ -151,7 +151,7 @@
         />
         <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
       </svg>
-      Settings
+      Paramètres
     </button>
 
     {#if currentMode !== 'player_vs_player'}
@@ -161,26 +161,26 @@
         class="inline-flex items-center justify-center rounded-xl border px-3 py-2 text-xs font-semibold transition {showInspector
           ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-200'
           : 'border-slate-700/80 bg-slate-900 text-slate-400 hover:text-slate-200'}"
-        title="Toggle WeakC4 AI heuristic & minimax inspector"
+        title="Afficher ou masquer l'inspecteur IA WeakC4"
       >
-        AI Debug
+        Debug IA
       </button>
     {/if}
   </div>
 
-  <!-- AI Playback / Step Controls -->
+  <!-- Contrôles IA vs IA / pas-à-pas -->
   {#if isAiVsAi || activeIsAi}
     <div class="rounded-xl border border-indigo-500/25 bg-slate-900/80 p-3 backdrop-blur">
       <div class="mb-2 flex items-center justify-between">
         <span class="text-xs font-semibold uppercase tracking-wider text-indigo-300">
-          {isAiVsAi ? 'AI vs AI Playback' : 'AI Turn Controls'}
+          {isAiVsAi ? 'Lecture IA vs IA' : 'Contrôle du tour IA'}
         </span>
         {#if isAiVsAi}
           <div class="flex items-center gap-1 rounded-lg bg-slate-950/80 p-0.5 text-[11px]">
             {#each [
-              { label: 'Slow', ms: 1100 },
+              { label: 'Lent', ms: 1100 },
               { label: 'Normal', ms: 550 },
-              { label: 'Fast', ms: 180 },
+              { label: 'Rapide', ms: 180 },
             ] as opt}
               <button
                 type="button"
@@ -206,7 +206,7 @@
               ? 'bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/50 hover:bg-amber-500/30'
               : 'bg-emerald-600 text-white hover:bg-emerald-500'}"
           >
-            {isAutoPlaying ? 'Pause Watch' : 'Auto-Play'}
+            {isAutoPlaying ? 'Pause' : 'Lecture auto'}
           </button>
         {/if}
 
@@ -216,7 +216,7 @@
           disabled={!activeIsAi || isThinking || isAutoPlaying}
           class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-100 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          Step AI Move
+          Coup IA
         </button>
       </div>
     </div>

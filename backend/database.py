@@ -16,8 +16,8 @@ DEFAULT_WINAPRIZE_CONFIG: dict[str, Any] = {
     "human_player": 1,
     "random_start": False,
     "allow_undo": False,
-    "title": "Connect 4 Challenge",
-    "subtitle": "Beat the AI to win a prize!",
+    "title": "Défi Puissance 4",
+    "subtitle": "Battez l'IA pour gagner un prix !",
 }
 
 

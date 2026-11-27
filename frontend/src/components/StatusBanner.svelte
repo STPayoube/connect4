@@ -27,14 +27,14 @@
         onclick={onDismissError}
         class="rounded-md px-2 py-0.5 text-xs font-medium text-rose-300 hover:bg-rose-500/20"
       >
-        Dismiss
+        Fermer
       </button>
     </div>
   {/if}
 
   {#if game}
     <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
-      <!-- Player 1 Card -->
+      <!-- Carte Joueur 1 -->
       <div
         class="flex items-center gap-3 rounded-xl border px-3.5 py-2.5 transition-all {game.status ===
           'playing' && game.current_player === 1
@@ -62,38 +62,38 @@
                 <span
                   class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-300"
                 >
-                  AI
+                  IA
                 </span>
               {/if}
             {:else}
               <span
                 class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-300"
               >
-                Player 1
+                Joueur 1
               </span>
             {/if}
           </div>
-          <p class="text-[11px] text-slate-400">Coral Red</p>
+          <p class="text-[11px] text-slate-400">Rouge Corail</p>
         </div>
         {#if game.status === 'playing' && game.current_player === 1}
           <span class="h-2.5 w-2.5 animate-pulse rounded-full bg-rose-400"></span>
         {/if}
       </div>
 
-      <!-- Center Status Pill -->
+      <!-- Pastille centrale de statut -->
       <div class="flex flex-col items-center justify-center gap-1">
         {#if game.status === 'win'}
           <div
             class="inline-flex items-center gap-2 rounded-full border border-emerald-400/50 bg-emerald-500/15 px-4 py-1.5 text-sm font-semibold text-emerald-200 shadow-[0_0_24px_-4px_rgba(52,211,153,0.45)]"
           >
             <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-            {winnerPlayer?.name} Wins!
+            {winnerPlayer?.name} a gagné !
           </div>
         {:else if game.status === 'draw'}
           <div
             class="inline-flex items-center gap-2 rounded-full border border-slate-500/50 bg-slate-800/80 px-4 py-1.5 text-sm font-semibold text-slate-200"
           >
-            Draw Game
+            Match nul !
           </div>
         {:else if isThinking}
           <div
@@ -102,7 +102,7 @@
             <span
               class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-300 border-t-transparent"
             ></span>
-            {activePlayer?.name} thinking…
+            {activePlayer?.name} réfléchit…
           </div>
         {:else}
           <div
@@ -113,18 +113,18 @@
                 ? 'bg-rose-400'
                 : 'bg-amber-400'}"
             ></span>
-            {activePlayer?.name}'s Turn
+            Au tour de {activePlayer?.name}
           </div>
         {/if}
 
         {#if game.config?.random_start && game.move_history?.length === 0}
           <span class="text-[11px] font-medium text-indigo-300">
-            Random toss: {activePlayer?.name} starts
+            Tirage au sort : {activePlayer?.name} commence
           </span>
         {/if}
       </div>
 
-      <!-- Player 2 Card -->
+      <!-- Carte Joueur 2 -->
       <div
         class="flex items-center gap-3 rounded-xl border px-3.5 py-2.5 transition-all {game.status ===
           'playing' && game.current_player === 2
@@ -152,18 +152,18 @@
                 <span
                   class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-300"
                 >
-                  AI
+                  IA
                 </span>
               {/if}
             {:else}
               <span
                 class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-300"
               >
-                Player 2
+                Joueur 2
               </span>
             {/if}
           </div>
-          <p class="text-[11px] text-slate-400">Amber Gold</p>
+          <p class="text-[11px] text-slate-400">Or Ambré</p>
         </div>
         {#if game.status === 'playing' && game.current_player === 2}
           <span class="h-2.5 w-2.5 animate-pulse rounded-full bg-amber-400"></span>

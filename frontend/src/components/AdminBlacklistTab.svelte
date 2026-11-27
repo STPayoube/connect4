@@ -24,7 +24,7 @@
       const res = await adminListBlacklist(token);
       entries = res.entries || [];
     } catch (err) {
-      error = err.message || 'Could not load blacklist.';
+      error = err.message || 'Impossible de charger la liste noire.';
     } finally {
       loading = false;
     }
@@ -41,7 +41,7 @@
       reason = '';
       await loadEntries();
     } catch (err) {
-      error = err.message || 'Could not add blacklist entry.';
+      error = err.message || "Impossible d'ajouter cette entrée.";
     } finally {
       saving = false;
     }
@@ -53,7 +53,7 @@
       await adminDeleteBlacklist(token, id);
       entries = entries.filter((e) => e.id !== id);
     } catch (err) {
-      error = err.message || 'Could not remove entry.';
+      error = err.message || 'Impossible de supprimer cette entrée.';
     }
   }
 
@@ -63,11 +63,11 @@
 </script>
 
 <div class="grid grid-cols-1 gap-6 lg:grid-cols-[360px_1fr]">
-  <!-- Add Form -->
+  <!-- Formulaire d'ajout -->
   <div class="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
-    <h2 class="text-sm font-bold text-white">Add Banned Username</h2>
+    <h2 class="text-sm font-bold text-white">Bannir un pseudo</h2>
     <p class="mt-1 text-xs text-slate-400">
-      Blocked across Normal games, /winaprize, and Online Friend rooms (case-insensitive).
+      Bloqué dans le mode normal, /winaprize et les parties entre amis (insensible à la casse).
     </p>
 
     {#if error}
@@ -78,40 +78,40 @@
 
     <form onsubmit={handleAdd} class="mt-4 space-y-3.5 text-xs">
       <div>
-        <label for="bl-pat" class="mb-1 block font-medium text-slate-300">Username / Word</label>
+        <label for="bl-pat" class="mb-1 block font-medium text-slate-300">Pseudo ou mot interdit</label>
         <input
           id="bl-pat"
           type="text"
           required
           maxlength="32"
           bind:value={pattern}
-          placeholder="e.g. badword"
+          placeholder="ex. motinterdit"
           class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
         />
       </div>
 
       <div>
-        <label for="bl-type" class="mb-1 block font-medium text-slate-300">Match Rule</label>
+        <label for="bl-type" class="mb-1 block font-medium text-slate-300">Type de blocage</label>
         <select
           id="bl-type"
           bind:value={matchType}
           class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
         >
-          <option value="exact">Exact Username Match</option>
-          <option value="contains">Contains Substring</option>
+          <option value="exact">Correspondance exacte</option>
+          <option value="contains">Contient le mot</option>
         </select>
       </div>
 
       <div>
         <label for="bl-reason" class="mb-1 block font-medium text-slate-300">
-          Reason (optional)
+          Motif (optionnel)
         </label>
         <input
           id="bl-reason"
           type="text"
           maxlength="120"
           bind:value={reason}
-          placeholder="e.g. Inappropriate name"
+          placeholder="ex. Pseudo inapproprié"
           class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
         />
       </div>
@@ -121,29 +121,29 @@
         disabled={saving}
         class="w-full rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-rose-500 disabled:opacity-50"
       >
-        {saving ? 'Adding…' : 'Block Username'}
+        {saving ? 'Ajout…' : 'Bannir le pseudo'}
       </button>
     </form>
   </div>
 
-  <!-- List -->
+  <!-- Liste active -->
   <div class="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
     <div class="mb-3 flex items-center justify-between">
-      <h2 class="text-sm font-bold text-white">Active Blacklist ({entries.length})</h2>
+      <h2 class="text-sm font-bold text-white">Liste noire active ({entries.length})</h2>
       <button
         type="button"
         onclick={loadEntries}
         class="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-700"
       >
-        Refresh
+        Actualiser
       </button>
     </div>
 
     {#if loading}
-      <p class="py-10 text-center text-xs text-slate-500">Loading blacklist…</p>
+      <p class="py-10 text-center text-xs text-slate-500">Chargement de la liste noire…</p>
     {:else if entries.length === 0}
       <p class="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-500">
-        No usernames are currently blacklisted.
+        Aucun pseudo n'est actuellement banni.
       </p>
     {:else}
       <ul class="divide-y divide-slate-800/80">
@@ -158,7 +158,7 @@
                     ? 'bg-amber-500/20 text-amber-300'
                     : 'bg-slate-800 text-slate-300'}"
                 >
-                  {entry.match_type}
+                  {entry.match_type === 'contains' ? 'Contient' : 'Exact'}
                 </span>
               </div>
               {#if entry.reason}
@@ -170,7 +170,7 @@
               onclick={() => handleRemove(entry.id)}
               class="shrink-0 rounded-lg border border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-emerald-500/50 hover:text-emerald-300"
             >
-              Unban
+              Débannir
             </button>
           </li>
         {/each}

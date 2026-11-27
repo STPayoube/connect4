@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import {
     createWinAPrizeGame,
+    getGameWsUrl,
     getWinAPrizeConfig,
     playHumanMove,
     stepAiMove,
@@ -19,12 +20,15 @@
   let isLoading = $state(true);
   let isThinking = $state(false);
   let error = $state(null);
+  let wsConnected = $state(false);
 
   let nameInput = $state('');
   let nameError = $state(null);
 
   let activeController = null;
   let openingTimer = null;
+  let socket = null;
+  let wsReconnectTimer = null;
 
   let canInteract = $derived(
     Boolean(
@@ -39,6 +43,72 @@
   let humanWon = $derived(
     Boolean(game && game.status === 'win' && game.winner === game.config?.human_player)
   );
+
+  function closeSocket() {
+    if (wsReconnectTimer) {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = null;
+    }
+    if (socket) {
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.close();
+      socket = null;
+    }
+    wsConnected = false;
+  }
+
+  function connectGameSocket(sessionId) {
+    closeSocket();
+    if (!sessionId) return;
+
+    const ws = new WebSocket(getGameWsUrl(sessionId));
+    socket = ws;
+
+    ws.onopen = () => {
+      wsConnected = true;
+    };
+
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.event === 'init' || msg.event === 'game_update') {
+          const prevPlies = game?.move_history?.length ?? 0;
+          const next = msg.data;
+          game = next;
+          if (next.move_history.length > prevPlies && next.last_move) {
+            playDropSound(next.last_move.row);
+          }
+          if (next.status === 'win' && next.move_history.length > prevPlies) {
+            playWinSound();
+          }
+        } else if (msg.event === 'ai_thinking') {
+          isThinking = Boolean(msg.data);
+        } else if (msg.event === 'error') {
+          error = msg.data?.detail || 'Erreur de jeu.';
+          isThinking = false;
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    ws.onclose = () => {
+      wsConnected = false;
+      if (socket === ws) {
+        socket = null;
+        wsReconnectTimer = setTimeout(() => {
+          if (game?.session_id === sessionId) {
+            connectGameSocket(sessionId);
+          }
+        }, 2500);
+      }
+    };
+
+    ws.onerror = () => {
+      ws.close();
+    };
+  }
 
   function cancelPending() {
     if (openingTimer) {
@@ -57,12 +127,13 @@
     try {
       prizeConfig = await getWinAPrizeConfig();
     } catch (err) {
-      error = err.message || 'Could not load challenge configuration.';
+      error = err.message || 'Impossible de charger la configuration du défi.';
     }
   }
 
   async function startPrizeGame(playerName) {
     cancelPending();
+    closeSocket();
     error = null;
     nameError = null;
     isLoading = true;
@@ -79,6 +150,7 @@
       if (activeController !== controller) return;
       game = state;
       isLoading = false;
+      connectGameSocket(state.session_id);
 
       if (
         state.status === 'playing' &&
@@ -97,7 +169,7 @@
         nameError = err.message;
         game = null;
       } else {
-        error = err.message || 'Could not start game.';
+        error = err.message || 'Impossible de lancer la partie.';
       }
       isLoading = false;
     }
@@ -105,10 +177,16 @@
 
   async function triggerAiReply() {
     if (!game || game.status !== 'playing' || isThinking) return;
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      isThinking = true;
+      socket.send(JSON.stringify({ type: 'ai_move' }));
+      return;
+    }
+
     isThinking = true;
     const controller = new AbortController();
     activeController = controller;
-
     try {
       const updated = await stepAiMove(game.session_id, controller.signal);
       if (activeController !== controller) return;
@@ -117,17 +195,24 @@
       if (updated.status === 'win') playWinSound();
     } catch (err) {
       if (err.name === 'AbortError' || activeController !== controller) return;
-      error = err.message || 'AI move failed.';
+      error = err.message || "Erreur lors du coup de l'IA.";
     } finally {
-      if (activeController === controller) {
-        isThinking = false;
-      }
+      if (activeController === controller) isThinking = false;
     }
   }
 
   async function handlePlayColumn(col) {
     if (!canInteract || !game) return;
     error = null;
+
+    // Envoi direct par WebSocket pour une réactivité maximale
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      isThinking = true;
+      socket.send(JSON.stringify({ type: 'human_move', col, auto_ai_reply: true }));
+      return;
+    }
+
+    // Repli HTTP si le WebSocket n'est pas encore ouvert
     isThinking = true;
     const controller = new AbortController();
     activeController = controller;
@@ -154,7 +239,7 @@
       }
     } catch (err) {
       if (err.name === 'AbortError' || activeController !== controller) return;
-      error = err.message || 'Failed to play move.';
+      error = err.message || 'Impossible de jouer ce coup.';
     } finally {
       if (activeController === controller) {
         isThinking = false;
@@ -164,8 +249,11 @@
 
   async function handleUndo() {
     if (!game || !game.can_undo || isThinking) return;
-    cancelPending();
     error = null;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'undo' }));
+      return;
+    }
     const controller = new AbortController();
     activeController = controller;
     try {
@@ -174,7 +262,7 @@
       game = updated;
     } catch (err) {
       if (err.name === 'AbortError') return;
-      error = err.message || 'Could not undo move.';
+      error = err.message || "Impossible d'annuler le coup.";
     }
   }
 
@@ -198,12 +286,13 @@
 
   onDestroy(() => {
     cancelPending();
+    closeSocket();
   });
 </script>
 
 <div class="min-h-screen px-4 py-6 sm:px-6 lg:px-8">
   <div class="mx-auto max-w-5xl space-y-5">
-    <!-- Minimal Clean Header -->
+    <!-- En-tête épuré -->
     <header class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-3">
         <div
@@ -218,47 +307,62 @@
         </div>
         <div>
           <h1 class="text-lg font-bold tracking-tight text-white sm:text-xl">
-            {prizeConfig?.title || 'Connect 4 Challenge'}
+            {prizeConfig?.title || 'Défi Puissance 4'}
           </h1>
           <p class="text-xs text-slate-400">
-            {prizeConfig?.subtitle || 'Beat the AI to win a prize!'}
+            {prizeConfig?.subtitle || "Battez l'IA pour gagner un prix !"}
           </p>
         </div>
       </div>
 
-      <button
-        type="button"
-        onclick={onGoHome}
-        class="rounded-full border border-slate-800 bg-slate-900/70 px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:border-slate-600 hover:text-slate-200"
-      >
-        Normal Mode
-      </button>
+      <div class="flex items-center gap-2">
+        {#if game}
+          <span
+            class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium {wsConnected
+              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+              : 'border-slate-700 bg-slate-900 text-slate-400'}"
+          >
+            <span
+              class="h-1.5 w-1.5 rounded-full {wsConnected ? 'animate-pulse bg-emerald-400' : 'bg-slate-500'}"
+            ></span>
+            {wsConnected ? 'Temps réel' : 'Connexion…'}
+          </span>
+        {/if}
+
+        <button
+          type="button"
+          onclick={onGoHome}
+          class="rounded-full border border-slate-800 bg-slate-900/70 px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:border-slate-600 hover:text-slate-200"
+        >
+          Mode normal
+        </button>
+      </div>
     </header>
 
     {#if prizeConfig && !prizeConfig.enabled}
       <div
         class="mx-auto mt-16 max-w-md rounded-2xl border border-slate-800 bg-slate-900/80 p-8 text-center shadow-2xl"
       >
-        <h2 class="text-lg font-bold text-white">Challenge Currently Closed</h2>
+        <h2 class="text-lg font-bold text-white">Défi actuellement fermé</h2>
         <p class="mt-2 text-sm text-slate-400">
-          This special Connect 4 challenge is paused right now. Please check back later!
+          Ce défi spécial Puissance 4 est actuellement en pause. Revenez plus tard !
         </p>
         <button
           type="button"
           onclick={onGoHome}
           class="mt-5 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500"
         >
-          Play Normal Connect 4
+          Jouer en mode normal
         </button>
       </div>
     {:else if !game && !isLoading}
       <div
         class="mx-auto mt-14 max-w-sm rounded-2xl border border-slate-700/80 bg-slate-900 p-6 shadow-2xl"
       >
-        <h2 class="text-base font-bold text-white">Enter Your Username</h2>
+        <h2 class="text-base font-bold text-white">Entrez votre pseudo</h2>
         <p class="mt-1 text-xs text-slate-400">
-          Enter your name to begin the {prizeConfig?.rows || 6}×{prizeConfig?.cols || 7} Connect
-          {prizeConfig?.align || 4} challenge.
+          Indiquez votre pseudo pour démarrer le défi {prizeConfig?.rows || 6}×{prizeConfig?.cols ||
+            7} (alignement {prizeConfig?.align || 4}).
         </p>
 
         {#if nameError}
@@ -275,14 +379,14 @@
             required
             maxlength="32"
             bind:value={nameInput}
-            placeholder="Your username"
+            placeholder="Votre pseudo"
             class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
           />
           <button
             type="submit"
             class="w-full rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-500"
           >
-            Start Challenge
+            Lancer le défi
           </button>
         </form>
       </div>
@@ -292,10 +396,10 @@
           class="rounded-2xl border border-emerald-400/50 bg-emerald-500/15 px-5 py-4 text-center shadow-lg"
         >
           <p class="text-base font-bold text-emerald-200">
-            Congratulations, {game.username}! You beat the AI!
+            Félicitations, {game.username} ! Vous avez battu l'IA !
           </p>
           <p class="mt-1 font-mono text-xs text-emerald-300/90">
-            Verified Result ID: {game.session_id.slice(0, 8).toUpperCase()} · Saved to leaderboard
+            Code de victoire vérifié : {game.session_id.slice(0, 8).toUpperCase()} · Enregistré
           </p>
         </div>
       {/if}
@@ -342,7 +446,7 @@
               disabled={isLoading || isThinking}
               class="w-full rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow transition hover:bg-indigo-500 disabled:opacity-50"
             >
-              Play Again
+              Rejouer
             </button>
 
             {#if game?.allow_undo}
@@ -352,7 +456,7 @@
                 disabled={!game?.can_undo || isThinking}
                 class="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-40"
               >
-                Undo
+                Annuler le coup
               </button>
             {/if}
 
@@ -360,12 +464,13 @@
               type="button"
               onclick={() => {
                 cancelPending();
+                closeSocket();
                 game = null;
                 nameInput = username || '';
               }}
               class="w-full rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200"
             >
-              Change Username
+              Changer de pseudo
             </button>
           </div>
 

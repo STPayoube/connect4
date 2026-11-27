@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import {
     createGame,
+    getGameWsUrl,
     playHumanMove,
     resetGame,
     stepAiMove,
@@ -35,8 +36,8 @@
     human_player: 1,
     ai_level: 'medium',
     ai2_level: 'medium',
-    username: 'Guest',
-    player2_name: 'Player 2',
+    username: 'Invité',
+    player2_name: 'Joueur 2',
     random_start: false,
   };
 
@@ -59,7 +60,7 @@
   }
 
   const initialRoute = detectRoute();
-  let activeView = $state(initialRoute.view); // normal | admin | winaprize | room
+  let activeView = $state(initialRoute.view);
   let roomCode = $state(initialRoute.roomCode);
 
   let username = $state('');
@@ -81,6 +82,8 @@
   let activeController = null;
   let autoPlayTimer = null;
   let openingAiTimer = null;
+  let gameSocket = null;
+  let wsReconnectTimer = null;
 
   let canHumanInteract = $derived(
     Boolean(
@@ -96,8 +99,70 @@
   );
 
   let settingsConfig = $derived(
-    game?.config ?? { ...DEFAULT_CONFIG, username: username || 'Guest' }
+    game?.config ?? { ...DEFAULT_CONFIG, username: username || 'Invité' }
   );
+
+  function closeGameSocket() {
+    if (wsReconnectTimer) {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = null;
+    }
+    if (gameSocket) {
+      gameSocket.onclose = null;
+      gameSocket.onerror = null;
+      gameSocket.close();
+      gameSocket = null;
+    }
+  }
+
+  function connectGameSocket(sessionId) {
+    closeGameSocket();
+    if (!sessionId || activeView !== 'normal') return;
+
+    const ws = new WebSocket(getGameWsUrl(sessionId));
+    gameSocket = ws;
+
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.event === 'init' || msg.event === 'game_update') {
+          const prevPlies = game?.move_history?.length ?? 0;
+          const next = msg.data;
+          game = next;
+          if (next.move_history.length > prevPlies && next.last_move) {
+            playDropSound(next.last_move.row);
+          }
+          if (next.status === 'win' && next.move_history.length > prevPlies) {
+            playWinSound();
+          }
+          if (next.status !== 'playing') {
+            isAutoPlaying = false;
+          }
+        } else if (msg.event === 'ai_thinking') {
+          isThinking = Boolean(msg.data);
+        } else if (msg.event === 'error') {
+          error = msg.data?.detail || 'Erreur de jeu.';
+          isThinking = false;
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    ws.onclose = () => {
+      if (gameSocket !== ws) return;
+      gameSocket = null;
+      wsReconnectTimer = setTimeout(() => {
+        if (activeView === 'normal' && game?.session_id === sessionId) {
+          connectGameSocket(sessionId);
+        }
+      }, 2500);
+    };
+
+    ws.onerror = () => {
+      ws.close();
+    };
+  }
 
   function cancelPendingWork() {
     isAutoPlaying = false;
@@ -123,6 +188,7 @@
 
     if (nextView !== 'normal') {
       cancelPendingWork();
+      closeGameSocket();
       showUsernameModal = false;
       settingsOpen = false;
       return;
@@ -131,6 +197,8 @@
       showUsernameModal = true;
     } else if (!game && !isLoading) {
       initSession({ ...DEFAULT_CONFIG, username });
+    } else if (game?.session_id && !gameSocket) {
+      connectGameSocket(game.session_id);
     }
   }
 
@@ -159,6 +227,7 @@
 
   async function initSession(config = DEFAULT_CONFIG) {
     cancelPendingWork();
+    closeGameSocket();
     error = null;
     usernameError = null;
     isLoading = true;
@@ -171,6 +240,7 @@
       if (activeController !== controller) return;
       game = state;
       isLoading = false;
+      connectGameSocket(state.session_id);
       maybeTriggerOpeningHumanVsAiMove(state);
     } catch (err) {
       if (err.name === 'AbortError' || activeController !== controller) return;
@@ -180,7 +250,7 @@
         usernameDraft = username;
         showUsernameModal = true;
       } else {
-        error = err.message || 'Could not reach Connect 4 backend.';
+        error = err.message || 'Impossible de joindre le serveur Puissance 4.';
       }
     }
   }
@@ -216,6 +286,21 @@
   async function handlePlayColumn(col) {
     if (!canHumanInteract || !game) return;
     error = null;
+
+    if (gameSocket && gameSocket.readyState === WebSocket.OPEN) {
+      if (game.config.mode === 'human_vs_ai') {
+        isThinking = true;
+      }
+      gameSocket.send(
+        JSON.stringify({
+          type: 'human_move',
+          col,
+          auto_ai_reply: game.config.mode === 'human_vs_ai',
+        })
+      );
+      return;
+    }
+
     isThinking = true;
     const controller = new AbortController();
     activeController = controller;
@@ -244,12 +329,12 @@
     } catch (err) {
       if (err.name === 'AbortError' || activeController !== controller) return;
       if (err.status === 404) {
-        const cfg = { ...(game?.config || DEFAULT_CONFIG), username: username || 'Guest' };
-        error = 'Your session expired after a server restart. Started a fresh game.';
+        const cfg = { ...(game?.config || DEFAULT_CONFIG), username: username || 'Invité' };
+        error = 'Votre session a expiré après une mise à jour. Nouvelle partie lancée.';
         await initSession(cfg);
         return;
       }
-      error = err.message || 'Failed to play move.';
+      error = err.message || 'Impossible de jouer ce coup.';
     } finally {
       if (activeController === controller) {
         isThinking = false;
@@ -280,12 +365,12 @@
       if (err.name === 'AbortError' || activeController !== controller) return;
       isAutoPlaying = false;
       if (err.status === 404) {
-        const cfg = { ...(game?.config || DEFAULT_CONFIG), username: username || 'Guest' };
-        error = 'Your session expired after a server restart. Started a fresh game.';
+        const cfg = { ...(game?.config || DEFAULT_CONFIG), username: username || 'Invité' };
+        error = 'Votre session a expiré après une mise à jour. Nouvelle partie lancée.';
         await initSession(cfg);
         return;
       }
-      error = err.message || 'AI move failed.';
+      error = err.message || "Échec du coup de l'IA.";
     } finally {
       if (activeController === controller) {
         isThinking = false;
@@ -344,8 +429,8 @@
       human_player: currentCfg.human_player,
       ai_level: currentCfg.ai_level,
       ai2_level: currentCfg.ai2_level,
-      username: username || 'Guest',
-      player2_name: currentCfg.player2_name || 'Player 2',
+      username: username || 'Invité',
+      player2_name: currentCfg.player2_name || 'Joueur 2',
       random_start: false,
       ...overrides,
     };
@@ -368,6 +453,7 @@
       if (activeController !== controller) return;
       game = state;
       isLoading = false;
+      if (!gameSocket) connectGameSocket(state.session_id);
       maybeTriggerOpeningHumanVsAiMove(state);
     } catch (err) {
       if (err.name === 'AbortError' || activeController !== controller) return;
@@ -378,7 +464,7 @@
         usernameError = err.message;
         showUsernameModal = true;
       } else {
-        error = err.message || 'Failed to reset game.';
+        error = err.message || 'Impossible de réinitialiser la partie.';
       }
       isLoading = false;
     }
@@ -402,6 +488,10 @@
     if (!game || !game.can_undo || isThinking) return;
     cancelPendingWork();
     error = null;
+    if (gameSocket && gameSocket.readyState === WebSocket.OPEN) {
+      gameSocket.send(JSON.stringify({ type: 'undo' }));
+      return;
+    }
     const controller = new AbortController();
     activeController = controller;
     try {
@@ -411,12 +501,12 @@
     } catch (err) {
       if (err.name === 'AbortError' || activeController !== controller) return;
       if (err.status === 404) {
-        const cfg = { ...(game?.config || DEFAULT_CONFIG), username: username || 'Guest' };
-        error = 'Your session expired after a server restart. Started a fresh game.';
+        const cfg = { ...(game?.config || DEFAULT_CONFIG), username: username || 'Invité' };
+        error = 'Votre session a expiré après une mise à jour. Nouvelle partie lancée.';
         await initSession(cfg);
         return;
       }
-      error = err.message || 'Could not undo move.';
+      error = err.message || "Impossible d'annuler le coup.";
     }
   }
 
@@ -451,9 +541,9 @@
   }
 
   function formatModeLabel(mode) {
-    if (mode === 'player_vs_player') return 'Player vs Player';
-    if (mode === 'ai_vs_ai') return 'AI vs AI';
-    return 'Human vs AI';
+    if (mode === 'player_vs_player') return 'Joueur vs Joueur';
+    if (mode === 'ai_vs_ai') return 'IA vs IA';
+    return "Contre l'IA";
   }
 
   onMount(() => {
@@ -477,6 +567,7 @@
       window.removeEventListener('hashchange', handleUrlChange);
     }
     cancelPendingWork();
+    closeGameSocket();
   });
 </script>
 
@@ -502,7 +593,7 @@
 {:else}
   <div class="min-h-screen px-4 py-5 sm:px-6 lg:px-8">
     <div class="mx-auto max-w-6xl space-y-5">
-      <!-- Header -->
+      <!-- En-tête -->
       <header class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
           <div
@@ -517,17 +608,17 @@
           </div>
           <div>
             <h1 class="text-lg font-bold tracking-tight text-white sm:text-xl">
-              Connect 4 <span class="font-normal text-indigo-400">· WeakC4 AI</span>
+              Puissance 4 <span class="font-normal text-indigo-400">· WeakC4 IA</span>
             </h1>
             <p class="text-xs text-slate-400">
               {#if game}
-                {game.config.rows}×{game.config.cols} · Connect {game.config.align} ·
+                {game.config.rows}×{game.config.cols} · Alignement {game.config.align} ·
                 {formatModeLabel(game.config.mode)}
                 {#if game.config.mode !== 'player_vs_player'}
                   · {formatLevel(game.config.ai_level)}
                 {/if}
               {:else}
-                Ready to play
+                Prêt à jouer
               {/if}
             </p>
           </div>
@@ -538,7 +629,7 @@
             type="button"
             onclick={toggleSound}
             class="rounded-full border border-slate-800 bg-slate-900/70 px-2.5 py-1.5 text-xs text-slate-400 transition hover:border-slate-600 hover:text-slate-200"
-            title={soundOn ? 'Mute sound effects' : 'Enable sound effects'}
+            title={soundOn ? 'Couper les sons' : 'Activer les sons'}
           >
             {soundOn ? '🔊' : '🔇'}
           </button>
@@ -552,11 +643,11 @@
                 showUsernameModal = true;
               }}
               class="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-900/90 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-indigo-400/50 hover:text-white"
-              title="Change username"
+              title="Modifier le pseudo"
             >
               <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
               <span>{username}</span>
-              <span class="text-[10px] text-slate-500">Edit</span>
+              <span class="text-[10px] text-slate-500">Modifier</span>
             </button>
           {/if}
 
@@ -570,9 +661,8 @@
         </div>
       </header>
 
-      <!-- Main Layout -->
+      <!-- Contenu principal -->
       <main class="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_340px]">
-        <!-- Left: Status Banner + Board -->
         <section class="space-y-4">
           <StatusBanner {game} {isThinking} {error} onDismissError={() => (error = null)} />
 
@@ -584,7 +674,7 @@
                 <div
                   class="h-8 w-8 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent"
                 ></div>
-                <span class="text-sm">Starting Connect 4 session…</span>
+                <span class="text-sm">Démarrage de la partie…</span>
               </div>
             </div>
           {:else if game}
@@ -603,7 +693,6 @@
           {/if}
         </section>
 
-        <!-- Right Sidebar: Controls + AI Inspector + History -->
         <aside class="space-y-4">
           <GameControls
             {game}
@@ -640,7 +729,7 @@
     </div>
   </div>
 
-  <!-- Username Welcome / Edit Modal -->
+  <!-- Modale Bienvenue / Pseudo -->
   {#if showUsernameModal}
     <div
       class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
@@ -649,10 +738,10 @@
     >
       <div class="w-full max-w-sm rounded-2xl border border-slate-700/80 bg-slate-900 p-6 shadow-2xl">
         <h2 class="text-base font-bold text-white">
-          {username && !usernameError ? 'Change Username' : 'Welcome to Connect 4'}
+          {username && !usernameError ? 'Modifier votre pseudo' : 'Bienvenue sur Puissance 4'}
         </h2>
         <p class="mt-1 text-xs text-slate-400">
-          Enter your username to start playing. Your live game will be tagged with this name.
+          Entrez votre pseudo pour commencer à jouer. Votre partie sera associée à ce nom.
         </p>
 
         {#if usernameError}
@@ -669,7 +758,7 @@
             required
             maxlength="32"
             bind:value={usernameDraft}
-            placeholder="e.g. Ayoube"
+            placeholder="ex. Ayoube"
             class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
           />
 
@@ -680,7 +769,7 @@
                 onclick={() => navigateTo('admin')}
                 class="text-xs font-medium text-slate-500 hover:text-slate-300"
               >
-                Admin login
+                Connexion Admin
               </button>
             {:else}
               <span></span>
@@ -693,14 +782,14 @@
                   onclick={() => (showUsernameModal = false)}
                   class="rounded-xl border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800"
                 >
-                  Cancel
+                  Annuler
                 </button>
               {/if}
               <button
                 type="submit"
                 class="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500"
               >
-                {username && !usernameError ? 'Save' : 'Start Playing'}
+                {username && !usernameError ? 'Enregistrer' : 'Commencer à jouer'}
               </button>
             </div>
           </div>

@@ -5,6 +5,7 @@
     createRoom,
     getRoom,
     getRoomStreamUrl,
+    getRoomWsUrl,
     joinRoom,
     playRoomMove,
     rematchRoom,
@@ -24,11 +25,11 @@
 
   let roomCode = $state('');
   let game = $state(null);
-  let seat = $state(0); // 1 = P1, 2 = P2, 0 = Spectator
+  let seat = $state(0); // 1 = J1, 2 = J2, 0 = Spectateur
   let playerToken = $state('');
   let qrDataUrl = $state('');
   let copied = $state(false);
-  let streamConnected = $state(false);
+  let connMode = $state('connecting'); // connecting | ws | sse | offline
 
   let isLoading = $state(true);
   let isSending = $state(false);
@@ -37,6 +38,7 @@
   let nameInput = $state('');
   let needsName = $state(false);
 
+  let socket = null;
   let eventSource = null;
   let reconnectTimer = null;
 
@@ -65,16 +67,34 @@
     return `connect4_room_seat_${code}`;
   }
 
-  function closeStream() {
+  function closeConnections() {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+    if (socket) {
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.close();
+      socket = null;
     }
     if (eventSource) {
       eventSource.close();
       eventSource = null;
     }
-    streamConnected = false;
+    connMode = 'offline';
+  }
+
+  function applyIncomingState(next) {
+    const prevPlies = game?.move_history?.length ?? 0;
+    game = next;
+    isSending = false;
+    if (next.move_history.length > prevPlies && next.last_move) {
+      playDropSound(next.last_move.row);
+    }
+    if (next.status === 'win' && prevPlies < next.move_history.length) {
+      playWinSound();
+    }
   }
 
   async function generateQr(url) {
@@ -83,50 +103,86 @@
       qrDataUrl = await QRCode.toDataURL(url, {
         width: 240,
         margin: 2,
-        color: {
-          dark: '#0f172a',
-          light: '#ffffff',
-        },
+        color: { dark: '#0f172a', light: '#ffffff' },
       });
     } catch {
       qrDataUrl = '';
     }
   }
 
-  function connectRoomStream(code) {
-    closeStream();
+  function connectRoomSseFallback(code) {
+    if (eventSource) eventSource.close();
     const es = new EventSource(getRoomStreamUrl(code));
     eventSource = es;
 
-    const handleState = (evt) => {
+    const handleEvt = (evt) => {
       try {
-        const next = JSON.parse(evt.data);
-        const prevPlies = game?.move_history?.length ?? 0;
-        game = next;
-        streamConnected = true;
-        if (next.move_history.length > prevPlies && next.last_move) {
-          playDropSound(next.last_move.row);
-        }
-        if (next.status === 'win' && prevPlies < next.move_history.length) {
-          playWinSound();
-        }
+        applyIncomingState(JSON.parse(evt.data));
+        connMode = 'sse';
       } catch {
-        // ignore parse error
+        // ignore
       }
     };
 
-    es.addEventListener('init', handleState);
-    es.addEventListener('room_update', handleState);
+    es.addEventListener('init', handleEvt);
+    es.addEventListener('room_update', handleEvt);
     es.onopen = () => {
-      streamConnected = true;
+      connMode = 'sse';
     };
     es.onerror = () => {
-      streamConnected = false;
       es.close();
       eventSource = null;
+      connMode = 'offline';
       reconnectTimer = setTimeout(() => {
-        if (roomCode === code) connectRoomStream(code);
+        if (roomCode === code) connectRoomSocket(code);
       }, 2500);
+    };
+  }
+
+  function connectRoomSocket(code) {
+    closeConnections();
+    connMode = 'connecting';
+    let openedOnce = false;
+
+    const ws = new WebSocket(getRoomWsUrl(code));
+    socket = ws;
+
+    ws.onopen = () => {
+      openedOnce = true;
+      connMode = 'ws';
+    };
+
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.event === 'init' || msg.event === 'room_update') {
+          applyIncomingState(msg.data);
+          connMode = 'ws';
+        } else if (msg.event === 'error') {
+          error = msg.data?.detail || 'Coup refusé.';
+          isSending = false;
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    ws.onclose = () => {
+      if (socket !== ws) return;
+      socket = null;
+      if (!openedOnce) {
+        // Repli automatique SSE si le reverse-proxy ne gère pas encore Upgrade WS
+        connectRoomSseFallback(code);
+      } else {
+        connMode = 'offline';
+        reconnectTimer = setTimeout(() => {
+          if (roomCode === code) connectRoomSocket(code);
+        }, 2000);
+      }
+    };
+
+    ws.onerror = () => {
+      ws.close();
     };
   }
 
@@ -152,10 +208,10 @@
       onRoomCodeChange(roomCode);
 
       await generateQr(`${window.location.origin}/game#${roomCode}`);
-      connectRoomStream(roomCode);
+      connectRoomSocket(roomCode);
       isLoading = false;
     } catch (err) {
-      error = err.message || 'Could not create online room.';
+      error = err.message || 'Impossible de créer le salon en ligne.';
       if (err.status === 403) {
         needsName = true;
       }
@@ -169,7 +225,6 @@
     isLoading = true;
     error = null;
 
-    // Restore seat if this browser tab already created or joined this room
     const savedToken = sessionStorage.getItem(tokenStorageKey(cleanCode));
     const savedSeat = Number(sessionStorage.getItem(seatStorageKey(cleanCode)) || '0');
     if (savedToken && (savedSeat === 1 || savedSeat === 2)) {
@@ -179,7 +234,7 @@
         playerToken = savedToken;
         seat = savedSeat;
         await generateQr(`${window.location.origin}/game#${cleanCode}`);
-        connectRoomStream(cleanCode);
+        connectRoomSocket(cleanCode);
         isLoading = false;
         return;
       } catch {
@@ -199,10 +254,10 @@
         sessionStorage.setItem(seatStorageKey(roomCode), String(seat));
       }
       await generateQr(`${window.location.origin}/game#${roomCode}`);
-      connectRoomStream(roomCode);
+      connectRoomSocket(roomCode);
       isLoading = false;
     } catch (err) {
-      error = err.message || `Could not join room #${cleanCode}.`;
+      error = err.message || `Impossible de rejoindre le salon #${cleanCode}.`;
       if (err.status === 403) {
         needsName = true;
       }
@@ -214,12 +269,18 @@
     if (!canPlay || !roomCode || !playerToken) return;
     isSending = true;
     error = null;
+
+    // Envoi ultra-rapide par WebSocket si ouvert
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'move', col, player_token: playerToken }));
+      return;
+    }
+
     try {
       const updated = await playRoomMove(roomCode, col, playerToken);
-      game = updated;
+      applyIncomingState(updated);
     } catch (err) {
-      error = err.message || 'Move rejected.';
-    } finally {
+      error = err.message || 'Coup refusé.';
       isSending = false;
     }
   }
@@ -227,10 +288,16 @@
   async function handleRematch(randomStart = false) {
     if (!roomCode || !playerToken || seat === 0) return;
     error = null;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(
+        JSON.stringify({ type: 'rematch', player_token: playerToken, random_start: randomStart })
+      );
+      return;
+    }
     try {
       game = await rematchRoom(roomCode, playerToken, randomStart);
     } catch (err) {
-      error = err.message || 'Could not start rematch.';
+      error = err.message || 'Impossible de lancer la revanche.';
     }
   }
 
@@ -241,7 +308,7 @@
       copied = true;
       setTimeout(() => (copied = false), 2000);
     } catch {
-      // fallback ignored
+      // ignore
     }
   }
 
@@ -262,9 +329,8 @@
     nameInput = username || '';
     const cleanInit = (initialCode || '').trim().toUpperCase().replace(/^#/, '');
 
-    // If re-entering own room from sessionStorage, skip name prompt
     if (cleanInit && sessionStorage.getItem(tokenStorageKey(cleanInit))) {
-      enterExistingRoom(cleanInit, username || 'Player');
+      enterExistingRoom(cleanInit, username || 'Joueur');
       return;
     }
 
@@ -282,13 +348,13 @@
   });
 
   onDestroy(() => {
-    closeStream();
+    closeConnections();
   });
 </script>
 
 <div class="min-h-screen px-4 py-5 sm:px-6 lg:px-8">
   <div class="mx-auto max-w-6xl space-y-5">
-    <!-- Header -->
+    <!-- En-tête -->
     <header class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-3">
         <div
@@ -303,20 +369,20 @@
         </div>
         <div>
           <h1 class="text-lg font-bold tracking-tight text-white sm:text-xl">
-            Online Friend Match
+            Partie entre amis
             {#if roomCode}
               <span class="ml-1 font-mono text-indigo-400">#{roomCode}</span>
             {/if}
           </h1>
           <p class="text-xs text-slate-400">
             {#if seat === 1}
-              You are Player 1 (Coral Red)
+              Vous êtes Joueur 1 (Rouge Corail)
             {:else if seat === 2}
-              You are Player 2 (Amber Gold)
+              Vous êtes Joueur 2 (Or Ambré)
             {:else if game}
-              Spectating Live
+              Mode Spectateur en direct
             {:else}
-              Play Connect 4 with a friend on any device
+              Jouez à Puissance 4 avec un ami sur deux appareils
             {/if}
           </p>
         </div>
@@ -325,16 +391,21 @@
       <div class="flex items-center gap-2">
         {#if roomCode}
           <span
-            class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium {streamConnected
+            class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium {connMode ===
+              'ws' || connMode === 'sse'
               ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
               : 'border-amber-500/40 bg-amber-500/10 text-amber-300'}"
           >
             <span
-              class="h-1.5 w-1.5 rounded-full {streamConnected
+              class="h-1.5 w-1.5 rounded-full {connMode === 'ws' || connMode === 'sse'
                 ? 'animate-pulse bg-emerald-400'
                 : 'bg-amber-400'}"
             ></span>
-            {streamConnected ? 'Live Sync' : 'Connecting…'}
+            {connMode === 'ws'
+              ? 'WebSocket'
+              : connMode === 'sse'
+                ? 'Synchro directe'
+                : 'Connexion…'}
           </span>
         {/if}
 
@@ -343,7 +414,7 @@
           onclick={onBackHome}
           class="rounded-full border border-slate-700 bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800"
         >
-          ← Back to Lobby
+          ← Retour à l'accueil
         </button>
       </div>
     </header>
@@ -353,10 +424,12 @@
         class="mx-auto mt-14 max-w-sm rounded-2xl border border-slate-700/80 bg-slate-900 p-6 shadow-2xl"
       >
         <h2 class="text-base font-bold text-white">
-          {initialCode ? `Join Room #${initialCode.toUpperCase()}` : 'Create Friend Room'}
+          {initialCode ? `Rejoindre le salon #${initialCode.toUpperCase()}` : 'Créer un salon ami'}
         </h2>
         <p class="mt-1 text-xs text-slate-400">
-          Enter your username to {initialCode ? 'join your friend’s game' : 'generate an invite QR code'}.
+          Entrez votre pseudo pour {initialCode
+            ? 'rejoindre la partie de votre ami'
+            : 'générer un QR code d’invitation'}.
         </p>
 
         {#if error}
@@ -373,14 +446,14 @@
             required
             maxlength="32"
             bind:value={nameInput}
-            placeholder="Your username"
+            placeholder="Votre pseudo"
             class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
           />
           <button
             type="submit"
             class="w-full rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-500"
           >
-            {initialCode ? 'Join Match' : 'Create Room & QR Code'}
+            {initialCode ? 'Rejoindre la partie' : 'Créer le salon & QR Code'}
           </button>
         </form>
       </div>
@@ -392,26 +465,26 @@
           <div
             class="h-8 w-8 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent"
           ></div>
-          <span class="text-sm">Setting up room…</span>
+          <span class="text-sm">Préparation du salon…</span>
         </div>
       </div>
     {:else if !game}
       <div
         class="mx-auto mt-12 max-w-md rounded-2xl border border-rose-500/30 bg-slate-900/80 p-6 text-center"
       >
-        <h2 class="text-base font-bold text-rose-200">Room Unavailable</h2>
-        <p class="mt-2 text-xs text-slate-400">{error || 'This room link has expired.'}</p>
+        <h2 class="text-base font-bold text-rose-200">Salon introuvable</h2>
+        <p class="mt-2 text-xs text-slate-400">{error || 'Ce lien de salon a expiré.'}</p>
         <button
           type="button"
-          onclick={() => hostNewRoom(username || nameInput || 'Player')}
+          onclick={() => hostNewRoom(username || nameInput || 'Joueur')}
           class="mt-4 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
         >
-          Create New Room
+          Créer un nouveau salon
         </button>
       </div>
     {:else}
       <main class="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_340px]">
-        <!-- Left: Board & Status -->
+        <!-- Gauche : Grille & Statut -->
         <section class="space-y-4">
           <StatusBanner
             {game}
@@ -426,10 +499,10 @@
             >
               <div class="inline-flex items-center gap-2 text-sm font-semibold text-indigo-200">
                 <span class="h-2.5 w-2.5 animate-ping rounded-full bg-indigo-400"></span>
-                Waiting for your friend to scan the QR code or open the link…
+                En attente que votre ami scanne le QR code ou ouvre le lien…
               </div>
               <p class="mt-1 text-xs text-slate-400">
-                The game will begin automatically the moment they join.
+                La partie démarrera automatiquement dès qu'il rejoindra.
               </p>
             </div>
           {/if}
@@ -448,13 +521,12 @@
           />
         </section>
 
-        <!-- Right Sidebar: QR Invite Card + Rematch + Move History -->
+        <!-- Droite : QR Code + Revanche + Historique -->
         <aside class="space-y-4">
-          <!-- QR Code & Share Invite Card -->
           <div class="rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
             <div class="flex items-center justify-between">
               <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-300">
-                Invite a Friend
+                Inviter un ami
               </h2>
               <span class="rounded bg-indigo-500/20 px-2 py-0.5 font-mono text-xs font-bold text-indigo-300">
                 #{roomCode}
@@ -466,7 +538,7 @@
                 <div class="rounded-2xl bg-white p-2.5 shadow-lg">
                   <img
                     src={qrDataUrl}
-                    alt="QR code to join room #{roomCode}"
+                    alt="QR code pour rejoindre le salon #{roomCode}"
                     class="h-44 w-44 rounded-lg"
                   />
                 </div>
@@ -486,12 +558,11 @@
                 onclick={copyShareLink}
                 class="w-full rounded-xl bg-indigo-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500"
               >
-                {copied ? 'Copied Invite Link!' : 'Copy Invite Link'}
+                {copied ? 'Lien copié !' : "Copier le lien d'invitation"}
               </button>
             </div>
           </div>
 
-          <!-- Rematch Controls -->
           {#if !game.waiting_for_opponent && seat > 0 && game.status !== 'playing'}
             <div class="grid grid-cols-2 gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-950/20 p-3">
               <button
@@ -499,14 +570,14 @@
                 onclick={() => handleRematch(false)}
                 class="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500"
               >
-                Rematch
+                Revanche
               </button>
               <button
                 type="button"
                 onclick={() => handleRematch(true)}
                 class="rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/25"
               >
-                Random Rematch
+                Revanche aléatoire
               </button>
             </div>
           {/if}

@@ -9,7 +9,16 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import dotenv_values, load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +39,7 @@ from schemas import (
     RoomMoveRequest,
     RoomRematchRequest,
     UpdateSessionDifficultyRequest,
+    UpdateSessionLiveConfigRequest,
     UpdateWinAPrizeConfigRequest,
 )
 
@@ -57,27 +67,33 @@ ADMIN_TOKEN_TTL_SECONDS = 86400
 _admin_tokens: dict[str, float] = {}
 
 
-def _verify_admin_token(token: Optional[str]) -> str:
+def _is_valid_admin_token(token: Optional[str]) -> bool:
     if not token:
-        raise HTTPException(status_code=401, detail="Admin authentication required.")
+        return False
     expires_at = _admin_tokens.get(token)
     if expires_at is None or time.time() > expires_at:
         _admin_tokens.pop(token, None)
-        raise HTTPException(status_code=401, detail="Invalid or expired admin session.")
+        return False
+    return True
+
+
+def _verify_admin_token(token: Optional[str]) -> str:
+    if not _is_valid_admin_token(token):
+        raise HTTPException(status_code=401, detail="Authentification administrateur requise.")
     return token
 
 
 def require_admin(authorization: Optional[str] = Header(default=None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing Bearer token.")
+        raise HTTPException(status_code=401, detail="Jeton d'authentification manquant.")
     token = authorization.removeprefix("Bearer ").strip()
     return _verify_admin_token(token)
 
 
 app = FastAPI(
-    title="Connect 4 — WeakC4 API",
-    description="REST API, Online Friend Rooms, Win-a-Prize mode, Stats & Live Admin monitor.",
-    version="3.0.0",
+    title="Puissance 4 — WeakC4 API",
+    description="API REST & WebSockets temps réel pour Puissance 4, Défi /winaprize, Amis en ligne et Admin.",
+    version="3.1.0",
 )
 
 cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
@@ -103,9 +119,9 @@ def _assert_allowed_usernames(*names: Optional[str]) -> None:
             continue
         blocked, reason = db.is_username_blocked(name)
         if blocked:
-            msg = "This username is not allowed. Please choose another username."
+            msg = "Ce pseudo n'est pas autorisé. Veuillez en choisir un autre."
             if reason:
-                msg = f"Username not allowed ({reason}). Please choose another username."
+                msg = f"Pseudo refusé ({reason}). Veuillez en choisir un autre."
             raise HTTPException(status_code=403, detail=msg)
 
 
@@ -154,7 +170,7 @@ def reset_game(session_id: str, payload: ResetGameRequest = ResetGameRequest()):
 def make_human_move(session_id: str, payload: HumanMoveRequest):
     session = sessions.get(session_id)
     if session.channel == "online_pvp":
-        raise HTTPException(status_code=400, detail="Use /api/rooms/{code}/move for online rooms.")
+        raise HTTPException(status_code=400, detail="Utilisez /api/rooms/{code}/move pour les salons en ligne.")
     applied = session.play_human_move(col=payload.col, auto_ai_reply=payload.auto_ai_reply)
     with session.lock:
         return session.to_response(moves_applied=applied)
@@ -188,7 +204,6 @@ def delete_game(session_id: str):
 @app.get("/api/winaprize/config")
 def get_public_winaprize_config():
     cfg = db.get_winaprize_config()
-    # Deliberately omit ai_level from public endpoint so admin live difficulty switching stays stealthy
     return {
         "enabled": cfg["enabled"],
         "rows": cfg["rows"],
@@ -207,7 +222,7 @@ def create_winaprize_game(payload: CreatePrizeGameRequest):
     if not cfg.get("enabled", True):
         raise HTTPException(
             status_code=403,
-            detail="The Win a Prize challenge is currently closed by the administrator.",
+            detail="Le défi Puissance 4 est actuellement fermé par l'administrateur.",
         )
 
     raw = {
@@ -314,6 +329,173 @@ async def room_stream(room_code: str, request: Request):
     )
 
 
+# --- Real-Time WebSockets (Games / AI, Online Friend Rooms, Admin) ---
+
+
+@app.websocket("/api/ws/games/{session_id}")
+async def ws_game(websocket: WebSocket, session_id: str):
+    try:
+        session = sessions.get(session_id)
+    except GameError:
+        await websocket.close(code=4404, reason="Session introuvable")
+        return
+
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    queue, unsubscribe = sessions.subscribe_session(session_id, loop)
+
+    async def sender():
+        try:
+            with session.lock:
+                initial = session.to_response().model_dump()
+            await websocket.send_json({"event": "init", "data": initial})
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    await websocket.send_json(msg)
+                except asyncio.TimeoutError:
+                    await websocket.send_json({"event": "ping"})
+        except Exception:
+            pass
+
+    send_task = asyncio.create_task(sender())
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            action = raw.get("type")
+            try:
+                current_sess = sessions.get(session_id)
+                if action == "ping":
+                    await websocket.send_json({"event": "pong"})
+                elif action == "human_move":
+                    col = int(raw["col"])
+                    auto_ai = bool(raw.get("auto_ai_reply", True))
+                    await asyncio.to_thread(current_sess.play_human_move, col, False)
+                    if (
+                        auto_ai
+                        and current_sess.status == "playing"
+                        and current_sess.player_meta[current_sess.c4.current_player].type == "ai"
+                    ):
+                        await websocket.send_json({"event": "ai_thinking", "data": True})
+                        await asyncio.to_thread(current_sess.step_ai_move)
+                        await websocket.send_json({"event": "ai_thinking", "data": False})
+                elif action == "ai_move":
+                    await websocket.send_json({"event": "ai_thinking", "data": True})
+                    try:
+                        await asyncio.to_thread(current_sess.step_ai_move)
+                    finally:
+                        await websocket.send_json({"event": "ai_thinking", "data": False})
+                elif action == "undo":
+                    await asyncio.to_thread(current_sess.undo)
+            except GameError as exc:
+                await websocket.send_json(
+                    {"event": "error", "data": {"detail": exc.message, "status": exc.status_code}}
+                )
+            except Exception as exc:
+                await websocket.send_json(
+                    {"event": "error", "data": {"detail": str(exc), "status": 400}}
+                )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        send_task.cancel()
+        unsubscribe()
+
+
+@app.websocket("/api/ws/rooms/{room_code}")
+async def ws_room(websocket: WebSocket, room_code: str):
+    try:
+        session = sessions.get_room(room_code)
+    except GameError:
+        await websocket.close(code=4404, reason="Salon introuvable")
+        return
+
+    code = session.room_code
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    queue, unsubscribe = sessions.subscribe_room(code, loop)
+
+    async def sender():
+        try:
+            with session.lock:
+                initial = session.to_response().model_dump()
+            await websocket.send_json({"event": "init", "data": initial})
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    await websocket.send_json(msg)
+                except asyncio.TimeoutError:
+                    await websocket.send_json({"event": "ping"})
+        except Exception:
+            pass
+
+    send_task = asyncio.create_task(sender())
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            action = raw.get("type")
+            try:
+                if action == "ping":
+                    await websocket.send_json({"event": "pong"})
+                elif action == "move":
+                    col = int(raw["col"])
+                    tok = str(raw.get("player_token", ""))
+                    await asyncio.to_thread(sessions.play_room_move, code, col, tok)
+                elif action == "rematch":
+                    tok = str(raw.get("player_token", ""))
+                    rand = bool(raw.get("random_start", False))
+                    await asyncio.to_thread(sessions.rematch_room, code, tok, rand)
+            except GameError as exc:
+                await websocket.send_json(
+                    {"event": "error", "data": {"detail": exc.message, "status": exc.status_code}}
+                )
+            except Exception as exc:
+                await websocket.send_json(
+                    {"event": "error", "data": {"detail": str(exc), "status": 400}}
+                )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        send_task.cancel()
+        unsubscribe()
+
+
+@app.websocket("/api/ws/admin")
+async def ws_admin(websocket: WebSocket, token: str = Query(...)):
+    if not _is_valid_admin_token(token):
+        await websocket.close(code=4401, reason="Non autorisé")
+        return
+
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    queue, unsubscribe = sessions.subscribe_admin(loop)
+
+    async def sender():
+        try:
+            initial = sessions.list_all()
+            await websocket.send_json({"event": "init", "data": {"sessions": initial}})
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    await websocket.send_json(msg)
+                except asyncio.TimeoutError:
+                    await websocket.send_json({"event": "ping"})
+        except Exception:
+            pass
+
+    send_task = asyncio.create_task(sender())
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            if raw.get("type") == "ping":
+                await websocket.send_json({"event": "pong"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        send_task.cancel()
+        unsubscribe()
+
+
 # --- Admin Control Panel Endpoints ---
 
 
@@ -321,7 +503,7 @@ async def room_stream(room_code: str, request: Request):
 def admin_login(payload: AdminLoginRequest):
     expected = _get_admin_password()
     if not hmac.compare_digest(payload.password.strip(), expected):
-        raise HTTPException(status_code=401, detail="Invalid admin password.")
+        raise HTTPException(status_code=401, detail="Mot de passe administrateur invalide.")
     now = time.time()
     for expired_tok in [t for t, exp in _admin_tokens.items() if now > exp]:
         _admin_tokens.pop(expired_tok, None)
@@ -354,6 +536,23 @@ def admin_update_session_difficulty(
     )
 
 
+@app.patch("/api/admin/sessions/{session_id}/live-config", response_model=GameStateResponse)
+def admin_update_session_live_config(
+    session_id: str,
+    payload: UpdateSessionLiveConfigRequest,
+    _token: str = Depends(require_admin),
+):
+    return sessions.update_session_live_config(
+        session_id,
+        ai_level=payload.ai_level,
+        ai2_level=payload.ai2_level,
+        rows=payload.rows,
+        cols=payload.cols,
+        align=payload.align,
+        allow_undo=payload.allow_undo,
+    )
+
+
 @app.delete("/api/admin/sessions/{session_id}", status_code=204)
 def admin_delete_session(session_id: str, _token: str = Depends(require_admin)):
     sessions.delete(session_id)
@@ -374,10 +573,17 @@ def admin_update_winaprize_config(
     _token: str = Depends(require_admin),
 ):
     cfg_dict = payload.model_dump(exclude={"apply_to_live_games"})
-    saved = db.save_winaprize_config(cfg_dict)
     updated_live = 0
     if payload.apply_to_live_games:
-        updated_live = sessions.update_winaprize_live_difficulty(saved["ai_level"])
+        # Validates & applies difficulty + board dimensions + align + undo to all live /winaprize games
+        updated_live = sessions.update_winaprize_live_sessions(
+            ai_level=cfg_dict["ai_level"],
+            rows=cfg_dict["rows"],
+            cols=cfg_dict["cols"],
+            align=cfg_dict["align"],
+            allow_undo=bool(cfg_dict["allow_undo"]),
+        )
+    saved = db.save_winaprize_config(cfg_dict)
     return {
         "config": saved,
         "updated_live_games": updated_live,
@@ -408,14 +614,14 @@ def admin_list_history(
 def admin_get_history_record(record_id: int, _token: str = Depends(require_admin)):
     record = db.get_game_record(record_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Game record not found.")
+        raise HTTPException(status_code=404, detail="Partie archivée introuvable.")
     return record
 
 
 @app.delete("/api/admin/history/{record_id}", status_code=204)
 def admin_delete_history_record(record_id: int, _token: str = Depends(require_admin)):
     if not db.delete_game_record(record_id):
-        raise HTTPException(status_code=404, detail="Game record not found.")
+        raise HTTPException(status_code=404, detail="Partie archivée introuvable.")
     return None
 
 
@@ -440,7 +646,7 @@ def admin_add_blacklist(
 @app.delete("/api/admin/blacklist/{entry_id}", status_code=204)
 def admin_delete_blacklist(entry_id: int, _token: str = Depends(require_admin)):
     if not db.delete_blacklist_entry(entry_id):
-        raise HTTPException(status_code=404, detail="Blacklist entry not found.")
+        raise HTTPException(status_code=404, detail="Entrée introuvable dans la liste noire.")
     return None
 
 
@@ -476,7 +682,6 @@ async def admin_stream(request: Request, token: str = Query(...)):
     )
 
 
-# Optional single-process static frontend serving (with SPA fallback for /admin, /winaprize, /game)
 if os.getenv("SERVE_STATIC", "false").lower() in ("1", "true", "yes"):
     dist_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     assets_dir = dist_dir / "assets"

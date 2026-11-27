@@ -67,7 +67,7 @@
 <div
   class="mx-auto w-full {boardMaxWidth} select-none"
   role="region"
-  aria-label="Connect 4 board"
+  aria-label="Grille Puissance 4"
   onmouseleave={() => (hoveredCol = null)}
 >
   <ColumnControls
@@ -117,8 +117,8 @@
       class="h-2.5 w-14 rounded-b-lg border-x border-b border-indigo-400/20 bg-slate-900/90 shadow-lg"
     ></div>
     <p class="mt-2 hidden text-[11px] text-slate-500 sm:block">
-      Tip: Click a column or use keys <span class="font-mono text-slate-400">1–{cols}</span> /
-      <span class="font-mono text-slate-400">← → Enter</span>
+      Astuce : cliquez une colonne ou utilisez <span class="font-mono text-slate-400">1–{cols}</span> /
+      <span class="font-mono text-slate-400">← → Entrée</span>
     </p>
     <div
       class="h-2.5 w-14 rounded-b-lg border-x border-b border-indigo-400/20 bg-slate-900/90 shadow-lg"

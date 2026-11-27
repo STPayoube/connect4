@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import QRCode from 'qrcode';
   import { adminGetWinAPrizeConfig, adminUpdateWinAPrizeConfig } from '../lib/api.js';
-  import { LEVELS } from '../lib/levels.js';
+  import { formatLevel, LEVELS } from '../lib/levels.js';
 
   let { token = '' } = $props();
 
@@ -14,14 +14,15 @@
   let startingPlayer = $state('1');
   let humanPlayer = $state(1);
   let allowUndo = $state(false);
-  let title = $state('Connect 4 Challenge');
-  let subtitle = $state('Beat the AI to win a prize!');
+  let title = $state('Défi Puissance 4');
+  let subtitle = $state("Battez l'IA pour gagner un prix !");
   let applyToLiveGames = $state(true);
 
   let liveCount = $state(0);
   let saving = $state(false);
   let toast = $state(null);
   let error = $state(null);
+  let collisionPopup = $state(null);
   let copied = $state(false);
   let prizeQrUrl = $state('');
 
@@ -59,7 +60,7 @@
       subtitle = c.subtitle;
       liveCount = res.live_prize_games || 0;
     } catch (err) {
-      error = err.message || 'Could not load /winaprize config.';
+      error = err.message || 'Impossible de charger la configuration /winaprize.';
     }
   }
 
@@ -68,7 +69,6 @@
     saving = true;
     error = null;
     const chosenLevel = overrideLevel || aiLevel;
-    aiLevel = chosenLevel;
     const isRandom = startingPlayer === 'random';
 
     try {
@@ -82,18 +82,26 @@
         human_player: Number(humanPlayer),
         random_start: isRandom,
         allow_undo: allowUndo,
-        title: title.trim() || 'Connect 4 Challenge',
-        subtitle: subtitle.trim() || 'Beat the AI to win a prize!',
+        title: title.trim() || 'Défi Puissance 4',
+        subtitle: subtitle.trim() || "Battez l'IA pour gagner un prix !",
         apply_to_live_games: applyToLiveGames,
       });
+      aiLevel = res.config.ai_level;
       liveCount = res.live_prize_games || 0;
       const suffix =
         res.updated_live_games > 0
-          ? ` — instantly updated ${res.updated_live_games} live game(s)!`
+          ? ` — appliqué en direct sur ${res.updated_live_games} partie(s) en cours !`
           : '';
-      showToast(`Saved /winaprize settings (${chosenLevel.toUpperCase()})${suffix}`);
+      showToast(
+        `Paramètres /winaprize enregistrés (${formatLevel(aiLevel)}, ${rows}×${cols}, align ${align})${suffix}`
+      );
     } catch (err) {
-      error = err.message || 'Failed to save /winaprize config.';
+      if (err.status === 409) {
+        collisionPopup = err.message;
+        await loadConfig();
+      } else {
+        error = err.message || 'Échec de la sauvegarde de /winaprize.';
+      }
     } finally {
       saving = false;
     }
@@ -124,18 +132,18 @@
 </script>
 
 <div class="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_300px]">
-  <!-- Main Config Card -->
+  <!-- Carte principale -->
   <div class="space-y-5 rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
     <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-4">
       <div>
-        <h2 class="text-base font-bold text-white">/winaprize Live Controls & Preset</h2>
+        <h2 class="text-base font-bold text-white">Contrôle en direct de /winaprize</h2>
         <p class="text-xs text-slate-400">
-          Changing difficulty below immediately updates all currently active /winaprize players on their very next move.
+          Les changements de difficulté, taille de grille et alignement s'appliquent instantanément aux joueurs en cours.
         </p>
       </div>
       <label class="inline-flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-200">
         <input type="checkbox" bind:checked={enabled} onchange={() => saveConfig()} class="accent-emerald-500" />
-        <span>{enabled ? 'Challenge Open' : 'Challenge Closed'}</span>
+        <span>{enabled ? 'Défi ouvert' : 'Défi fermé'}</span>
       </label>
     </div>
 
@@ -151,14 +159,14 @@
       </div>
     {/if}
 
-    <!-- Instant Live Difficulty Switcher -->
+    <!-- Changement de difficulté instantané -->
     <div class="rounded-xl border border-amber-500/35 bg-amber-950/15 p-4 space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <span class="text-xs font-bold uppercase tracking-wider text-amber-300">
-          Instant Difficulty Switch
+          Changement de difficulté instantané
         </span>
         <span class="rounded-full bg-amber-500/20 px-2.5 py-0.5 font-mono text-[11px] text-amber-200">
-          {liveCount} live /winaprize {liveCount === 1 ? 'player' : 'players'}
+          {liveCount} {liveCount <= 1 ? 'joueur en direct' : 'joueurs en direct'}
         </span>
       </div>
 
@@ -180,11 +188,11 @@
 
       <label class="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
         <input type="checkbox" bind:checked={applyToLiveGames} class="accent-amber-400" />
-        <span>Apply immediately to players currently mid-game on /winaprize</span>
+        <span>Appliquer immédiatement (difficulté + taille de grille) aux parties /winaprize en cours</span>
       </label>
     </div>
 
-    <!-- Preset Parameters Form -->
+    <!-- Paramètres prédéfinis -->
     <form
       onsubmit={(e) => {
         e.preventDefault();
@@ -194,7 +202,7 @@
     >
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
-          <label for="prize-title" class="mb-1 block text-xs text-slate-300">Page Title</label>
+          <label for="prize-title" class="mb-1 block text-xs text-slate-300">Titre de la page</label>
           <input
             id="prize-title"
             type="text"
@@ -204,7 +212,7 @@
           />
         </div>
         <div>
-          <label for="prize-sub" class="mb-1 block text-xs text-slate-300">Subtitle</label>
+          <label for="prize-sub" class="mb-1 block text-xs text-slate-300">Sous-titre</label>
           <input
             id="prize-sub"
             type="text"
@@ -218,19 +226,19 @@
       <div class="grid grid-cols-3 gap-3">
         <div>
           <label for="p-rows" class="mb-1 flex justify-between text-xs text-slate-300">
-            <span>Rows</span><span class="font-mono text-indigo-300">{rows}</span>
+            <span>Lignes</span><span class="font-mono text-indigo-300">{rows}</span>
           </label>
           <input id="p-rows" type="range" min="4" max="10" bind:value={rows} class="w-full accent-indigo-500" />
         </div>
         <div>
           <label for="p-cols" class="mb-1 flex justify-between text-xs text-slate-300">
-            <span>Cols</span><span class="font-mono text-indigo-300">{cols}</span>
+            <span>Colonnes</span><span class="font-mono text-indigo-300">{cols}</span>
           </label>
           <input id="p-cols" type="range" min="4" max="10" bind:value={cols} class="w-full accent-indigo-500" />
         </div>
         <div>
           <label for="p-align" class="mb-1 flex justify-between text-xs text-slate-300">
-            <span>Align</span><span class="font-mono text-indigo-300">{align}</span>
+            <span>Alignement</span><span class="font-mono text-indigo-300">{align}</span>
           </label>
           <input id="p-align" type="range" min="3" max={maxAlign} bind:value={align} class="w-full accent-indigo-500" />
         </div>
@@ -238,34 +246,34 @@
 
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
-          <label for="p-seat" class="mb-1 block text-xs text-slate-300">Challenger Plays As</label>
+          <label for="p-seat" class="mb-1 block text-xs text-slate-300">Le challenger joue en tant que</label>
           <select
             id="p-seat"
             bind:value={humanPlayer}
             class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100"
           >
-            <option value={1}>Player 1 (Coral Red)</option>
-            <option value={2}>Player 2 (Amber Gold)</option>
+            <option value={1}>Joueur 1 (Rouge Corail)</option>
+            <option value={2}>Joueur 2 (Or Ambré)</option>
           </select>
         </div>
 
         <div>
-          <label for="p-start" class="mb-1 block text-xs text-slate-300">Starting Player</label>
+          <label for="p-start" class="mb-1 block text-xs text-slate-300">Premier joueur</label>
           <select
             id="p-start"
             bind:value={startingPlayer}
             class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100"
           >
-            <option value="1">Player 1</option>
-            <option value="2">Player 2</option>
-            <option value="random">Random Coin Toss</option>
+            <option value="1">Joueur 1</option>
+            <option value="2">Joueur 2</option>
+            <option value="random">Tirage aléatoire</option>
           </select>
         </div>
       </div>
 
       <label class="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
         <input type="checkbox" bind:checked={allowUndo} class="accent-indigo-500" />
-        <span>Allow Undo button on /winaprize (recommended: off for prizes)</span>
+        <span>Autoriser le bouton Annuler sur /winaprize (déconseillé pour un concours)</span>
       </label>
 
       <div class="flex justify-end border-t border-slate-800 pt-3">
@@ -274,22 +282,22 @@
           disabled={saving}
           class="rounded-xl bg-indigo-600 px-5 py-2 text-xs font-semibold text-white shadow hover:bg-indigo-500 disabled:opacity-50"
         >
-          {saving ? 'Saving…' : 'Save Preset Parameters'}
+          {saving ? 'Application…' : 'Appliquer & Enregistrer'}
         </button>
       </div>
     </form>
   </div>
 
-  <!-- Right Share & QR Card -->
+  <!-- Carte de partage & QR Code -->
   <aside class="space-y-4">
     <div class="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 space-y-3">
       <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-300">
-        Share /winaprize Link
+        Lien & QR Code /winaprize
       </h3>
       {#if prizeQrUrl}
         <div class="flex justify-center">
           <div class="rounded-2xl bg-white p-2.5 shadow">
-            <img src={prizeQrUrl} alt="QR code for /winaprize" class="h-44 w-44 rounded-lg" />
+            <img src={prizeQrUrl} alt="QR code pour /winaprize" class="h-44 w-44 rounded-lg" />
           </div>
         </div>
       {/if}
@@ -301,8 +309,43 @@
         onclick={copyPrizeLink}
         class="w-full rounded-xl bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
       >
-        {copied ? 'Copied Link!' : 'Copy /winaprize Link'}
+        {copied ? 'Lien copié !' : 'Copier le lien /winaprize'}
       </button>
     </div>
   </aside>
 </div>
+
+<!-- Pop-up d'erreur de collision de redimensionnement -->
+{#if collisionPopup}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
+    role="alertdialog"
+    aria-modal="true"
+  >
+    <div class="w-full max-w-md rounded-2xl border border-rose-500/50 bg-slate-900 p-6 shadow-2xl">
+      <div class="flex items-center gap-3">
+        <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/20 text-rose-300">
+          ⚠️
+        </div>
+        <div>
+          <h3 class="text-base font-bold text-rose-200">Redimensionnement impossible</h3>
+          <p class="text-xs text-slate-400">Des pions sont déjà placés sur ces cases</p>
+        </div>
+      </div>
+
+      <p class="mt-4 rounded-xl border border-rose-500/30 bg-rose-950/40 p-3 text-xs leading-relaxed text-rose-100">
+        {collisionPopup}
+      </p>
+
+      <div class="mt-5 flex justify-end">
+        <button
+          type="button"
+          onclick={() => (collisionPopup = null)}
+          class="rounded-xl bg-rose-600 px-5 py-2 text-xs font-semibold text-white hover:bg-rose-500"
+        >
+          Compris
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

@@ -102,14 +102,16 @@ class WinAPrizeConfig(BaseModel):
     human_player: Literal[1, 2] = 1
     random_start: bool = False
     allow_undo: bool = False
-    title: str = Field(default="Connect 4 Challenge", max_length=80)
-    subtitle: str = Field(default="Beat the AI to win a prize!", max_length=140)
+    title: str = Field(default="Défi Puissance 4", max_length=80)
+    subtitle: str = Field(default="Battez l'IA pour gagner un prix !", max_length=140)
 
     @model_validator(mode="after")
     def check_align(self):
         max_align = min(self.rows, self.cols)
         if self.align > max_align:
-            raise ValueError(f"align ({self.align}) cannot exceed min(rows, cols) ({max_align}).")
+            raise ValueError(
+                f"L'alignement ({self.align}) ne peut pas dépasser min(lignes, colonnes) ({max_align})."
+            )
         if self.starting_player == "random":
             self.random_start = True
         return self
@@ -167,6 +169,15 @@ class AdminLoginRequest(BaseModel):
 class UpdateSessionDifficultyRequest(BaseModel):
     ai_level: DifficultyLevel
     ai2_level: Optional[DifficultyLevel] = None
+
+
+class UpdateSessionLiveConfigRequest(BaseModel):
+    ai_level: Optional[DifficultyLevel] = None
+    ai2_level: Optional[DifficultyLevel] = None
+    rows: Optional[int] = Field(default=None, ge=4, le=10)
+    cols: Optional[int] = Field(default=None, ge=4, le=10)
+    align: Optional[int] = Field(default=None, ge=3, le=10)
+    allow_undo: Optional[bool] = None
 
 
 class BlacklistEntryRequest(BaseModel):

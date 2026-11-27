@@ -21,11 +21,11 @@
 
 <button
   type="button"
-  aria-label="Row {row + 1}, Column {col + 1}{value === 1
-    ? ', Player 1'
+  aria-label="Ligne {row + 1}, Colonne {col + 1}{value === 1
+    ? ', Joueur 1'
     : value === 2
-      ? ', Player 2'
-      : ', Empty'}"
+      ? ', Joueur 2'
+      : ', Vide'}"
   disabled={!interactive}
   onclick={() => interactive && onSelectCol(col)}
   onmouseenter={() => onHoverCol(col)}

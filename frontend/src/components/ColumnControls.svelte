@@ -34,7 +34,7 @@
       onclick={() => active && onSelectCol(colIdx)}
       onmouseenter={() => onHoverCol(colIdx)}
       onfocus={() => onHoverCol(colIdx)}
-      aria-label="Drop disc in column {colIdx + 1}"
+      aria-label="Lâcher un pion dans la colonne {colIdx + 1}"
       class="flex flex-col items-center justify-end gap-1 focus:outline-none {active
         ? 'cursor-pointer'
         : 'cursor-default'}"
