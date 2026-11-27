@@ -63,6 +63,10 @@ export function getAdminWsUrl(token) {
   return buildWsUrl(`/ws/admin?token=${encodeURIComponent(token)}`);
 }
 
+export function getWinAPrizeLiveWsUrl() {
+  return buildWsUrl('/ws/winaprize/live');
+}
+
 // --- Standard Games ---
 
 export function checkUsername(username, signal) {
@@ -136,6 +140,10 @@ export function deleteGame(sessionId) {
 
 export function getWinAPrizeConfig(signal) {
   return request('/winaprize/config', { method: 'GET', signal });
+}
+
+export function getWinAPrizeLive(signal) {
+  return request('/winaprize/live', { method: 'GET', signal });
 }
 
 export function createWinAPrizeGame(signal) {

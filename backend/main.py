@@ -234,6 +234,19 @@ def get_public_winaprize_config():
     }
 
 
+@app.get("/api/winaprize/live")
+def get_public_winaprize_live():
+    cfg = db.get_winaprize_config()
+    players = sessions.get_winaprize_live_players()
+    return {
+        "enabled": cfg["enabled"],
+        "title": cfg["title"],
+        "subtitle": cfg["subtitle"],
+        "connected_count": len(players),
+        "players": players,
+    }
+
+
 @app.post("/api/winaprize/games", response_model=GameStateResponse, status_code=201)
 def create_winaprize_game(payload: CreatePrizeGameRequest = CreatePrizeGameRequest()):
     cleaned_user = (payload.username or "").strip()[:32]
@@ -354,6 +367,48 @@ async def room_stream(room_code: str, request: Request):
 
 
 # --- Real-Time WebSockets (Games / AI, Online Friend Rooms, Admin) ---
+
+
+@app.websocket("/api/ws/winaprize/live")
+async def ws_winaprize_live(websocket: WebSocket):
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    queue, unsubscribe = sessions.subscribe_prize_live(loop)
+
+    async def sender():
+        try:
+            cfg = db.get_winaprize_config()
+            await websocket.send_json(
+                {
+                    "event": "init",
+                    "data": {
+                        "enabled": cfg["enabled"],
+                        "title": cfg["title"],
+                        "subtitle": cfg["subtitle"],
+                        "players": sessions.get_winaprize_live_players(),
+                    },
+                }
+            )
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    await websocket.send_json(msg)
+                except asyncio.TimeoutError:
+                    await websocket.send_json({"event": "ping"})
+        except Exception:
+            pass
+
+    send_task = asyncio.create_task(sender())
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            if raw == "ping":
+                await websocket.send_json({"event": "pong"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        send_task.cancel()
+        unsubscribe()
 
 
 @app.websocket("/api/ws/games/{session_id}")
@@ -608,6 +663,13 @@ def admin_update_winaprize_config(
             allow_undo=bool(cfg_dict["allow_undo"]),
         )
     saved = db.save_winaprize_config(cfg_dict)
+    sessions.broadcast_prize_config(
+        {
+            "enabled": saved["enabled"],
+            "title": saved["title"],
+            "subtitle": saved["subtitle"],
+        }
+    )
     return {
         "config": saved,
         "updated_live_games": updated_live,

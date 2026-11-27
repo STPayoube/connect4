@@ -26,6 +26,7 @@
   import GameSettingsModal from './components/GameSettingsModal.svelte';
   import AdminPanel from './components/AdminPanel.svelte';
   import PrizeGameView from './components/PrizeGameView.svelte';
+  import WapQrCodeView from './components/WapQrCodeView.svelte';
   import OnlineRoomView from './components/OnlineRoomView.svelte';
 
   const USERNAME_STORAGE_KEY = 'connect4_username';
@@ -55,6 +56,9 @@
     }
     if (path === '/winaprize') {
       return { view: 'winaprize', roomCode: '' };
+    }
+    if (path === '/wapqrcode') {
+      return { view: 'wapqrcode', roomCode: '' };
     }
     if (path === '/game') {
       const code = hash.replace(/^#/, '').trim().toUpperCase();
@@ -254,6 +258,7 @@
     let targetUrl = '/';
     if (view === 'admin') targetUrl = '/admin';
     else if (view === 'winaprize') targetUrl = '/winaprize';
+    else if (view === 'wapqrcode') targetUrl = '/wapqrcode';
     else if (view === 'room') targetUrl = code ? `/game#${code}` : '/game';
 
     const currentFull = `${window.location.pathname}${window.location.hash}`;
@@ -793,6 +798,8 @@
   <AdminPanel onBackToGame={() => navigateTo('normal')} />
 {:else if activeView === 'winaprize'}
   <PrizeGameView onGoHome={() => navigateTo('normal')} />
+{:else if activeView === 'wapqrcode'}
+  <WapQrCodeView />
 {:else if activeView === 'room'}
   <OnlineRoomView
     initialCode={roomCode}

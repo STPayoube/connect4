@@ -115,6 +115,7 @@ class GameSession:
     snapshots: list[UndoSnapshot] = field(default_factory=list)
     last_ai_info: Optional[dict] = None
     persisted: bool = False
+    ws_connected_ever: bool = False
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -649,6 +650,7 @@ class SessionManager:
         self._admin_subs: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = set()
         self._room_subs: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]] = {}
         self._session_subs: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]] = {}
+        self._prize_live_subs: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = set()
         self._sub_lock = threading.Lock()
 
     # --- Pub/Sub (Admin, Online Rooms, and Individual Live Sessions for WebSockets & SSE) ---
@@ -694,6 +696,15 @@ class SessionManager:
         with self._sub_lock:
             self._session_subs.setdefault(session_id, set()).add(entry)
 
+        is_prize = False
+        with self._lock:
+            sess = self._sessions.get(session_id)
+            if sess is not None:
+                sess.ws_connected_ever = True
+                is_prize = sess.channel == "winaprize"
+        if is_prize:
+            self._broadcast_prize_live()
+
         def unsubscribe():
             with self._sub_lock:
                 subs = self._session_subs.get(session_id)
@@ -701,8 +712,81 @@ class SessionManager:
                     subs.discard(entry)
                     if not subs:
                         self._session_subs.pop(session_id, None)
+            if is_prize:
+                self._broadcast_prize_live()
 
         return queue, unsubscribe
+
+    def subscribe_prize_live(
+        self, loop: asyncio.AbstractEventLoop
+    ) -> tuple[asyncio.Queue, Callable[[], None]]:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=60)
+        entry = (loop, queue)
+        with self._sub_lock:
+            self._prize_live_subs.add(entry)
+
+        def unsubscribe():
+            with self._sub_lock:
+                self._prize_live_subs.discard(entry)
+
+        return queue, unsubscribe
+
+    def get_winaprize_live_players(self) -> list[dict[str, Any]]:
+        now = time.time()
+        with self._lock:
+            prize_sessions = [
+                s for s in self._sessions.values() if s.channel == "winaprize"
+            ]
+        with self._sub_lock:
+            active_ws_ids = {
+                sid for sid, subs in self._session_subs.items() if subs
+            }
+
+        players: list[dict[str, Any]] = []
+        for sess in prize_sessions:
+            with sess.lock:
+                ws_open = sess.session_id in active_ws_ids
+                http_recent = (
+                    not sess.ws_connected_ever
+                    and sess.status == "playing"
+                    and (now - sess.updated_at) <= 60
+                )
+                if not ws_open and not http_recent:
+                    continue
+                players.append(
+                    {
+                        "session_id": sess.session_id,
+                        "short_id": sess.session_id[:6].upper(),
+                        "username": sess.config.username,
+                        "status": sess.status,
+                        "end_reason": sess.end_reason,
+                        "human_won": bool(
+                            sess.status == "win"
+                            and sess.winner == sess.config.human_player
+                        ),
+                        "moves": len(sess.move_history),
+                        "rows": sess.config.rows,
+                        "cols": sess.config.cols,
+                        "ws_connected": ws_open,
+                        "created_at": sess.created_at,
+                        "updated_at": sess.updated_at,
+                    }
+                )
+
+        players.sort(key=lambda p: (0 if p["status"] == "playing" else 1, -p["created_at"]))
+        return players
+
+    def _broadcast_prize_live(self):
+        with self._sub_lock:
+            subs = list(self._prize_live_subs)
+        if subs:
+            self._push_to_subs(subs, "players_update", self.get_winaprize_live_players())
+
+    def broadcast_prize_config(self, public_config: dict[str, Any]):
+        with self._sub_lock:
+            subs = list(self._prize_live_subs)
+        if subs:
+            self._push_to_subs(subs, "config_update", public_config)
 
     @staticmethod
     def _push_to_subs(
@@ -752,11 +836,14 @@ class SessionManager:
             player_snapshot = session.to_response(for_admin=False).model_dump()
             room_code = session.room_code
             sid = session.session_id
+            is_prize = session.channel == "winaprize"
 
         self._broadcast_admin("session_update", admin_snapshot)
         self._broadcast_session(sid, "game_update", player_snapshot)
         if room_code:
             self._broadcast_room(room_code, "room_update", player_snapshot)
+        if is_prize:
+            self._broadcast_prize_live()
 
     def _on_session_finish(self, session: GameSession):
         if self.db is None:
@@ -951,9 +1038,12 @@ class SessionManager:
             sess = self._sessions.pop(session_id, None)
             if sess is None:
                 raise GameError(f"Session '{session_id}' introuvable.", status_code=404)
+            is_prize = sess.channel == "winaprize"
             if sess.room_code:
                 self._rooms.pop(sess.room_code, None)
         self._broadcast_admin("session_delete", {"session_id": session_id})
+        if is_prize:
+            self._broadcast_prize_live()
 
     # --- Live Mid-Game Modification (Difficulty, Board Size, Alignment, Undo) ---
 

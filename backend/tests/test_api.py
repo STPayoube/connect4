@@ -639,5 +639,42 @@ def test_winaprize_starts_without_username_and_migrates_english_defaults():
             pass
 
 
+def test_wapqrcode_winaprize_live_endpoint_and_websocket_presence():
+    """Verify /api/winaprize/live and /api/ws/winaprize/live track connected players in real time without leaking AI level."""
+    # Start a /winaprize game
+    g = client.post("/api/winaprize/games", json={}).json()
+    sid = g["session_id"]
+
+    # Public REST endpoint includes the active player and hides AI internals
+    live = client.get("/api/winaprize/live")
+    assert live.status_code == 200
+    body = live.json()
+    assert "ai_level" not in body
+    assert any(p["session_id"] == sid for p in body["players"])
+    for p in body["players"]:
+        assert "ai_level" not in p
+        assert "ai_info" not in p
+
+    # Connect to /api/ws/winaprize/live and verify real-time connect/disconnect presence
+    with client.websocket_connect("/api/ws/winaprize/live") as live_ws:
+        init_msg = live_ws.receive_json()
+        assert init_msg["event"] == "init"
+        assert "players" in init_msg["data"]
+
+        # Open player's game WebSocket -> live_ws receives players_update with ws_connected=True
+        with client.websocket_connect(f"/api/ws/games/{sid}") as game_ws:
+            game_ws.receive_json()  # init
+            upd = live_ws.receive_json()
+            assert upd["event"] == "players_update"
+            entry = next(p for p in upd["data"] if p["session_id"] == sid)
+            assert entry["ws_connected"] is True
+
+        # After game_ws closes -> live_ws receives players_update without disconnected player
+        after_close = live_ws.receive_json()
+        assert after_close["event"] == "players_update"
+        assert not any(p["session_id"] == sid for p in after_close["data"])
+
+
+
 
 
