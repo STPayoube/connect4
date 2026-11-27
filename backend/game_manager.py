@@ -108,6 +108,7 @@ class GameSession:
     allow_undo: bool = True
     player_tokens: dict[int, str] = field(default_factory=dict)
     status: str = "playing"
+    end_reason: Optional[str] = None
     winner: Optional[int] = None
     winning_cells: list[list[int]] = field(default_factory=list)
     move_history: list[MoveRecord] = field(default_factory=list)
@@ -143,14 +144,17 @@ class GameSession:
         winner, cells = self.c4.check_win()
         if winner is not None:
             self.status = "win"
+            self.end_reason = "win"
             self.winner = winner
             self.winning_cells = cells
         elif self.c4.is_full():
             self.status = "draw"
+            self.end_reason = "draw"
             self.winner = None
             self.winning_cells = []
         else:
             self.status = "playing"
+            self.end_reason = None
             self.winner = None
             self.winning_cells = []
             return False
@@ -159,6 +163,31 @@ class GameSession:
             self.persisted = True
             return True
         return False
+
+    def forfeit(self, reason: str = "manual_end") -> bool:
+        """Explicitly finish/forfeit an active game with a distinct reason and archive it."""
+        just_finished = False
+        with self.lock:
+            if self.status != "playing":
+                return False
+            self.status = "forfeit"
+            self.end_reason = reason
+            self.winning_cells = []
+            if self.config.mode == "human_vs_ai":
+                self.winner = 2 if self.config.human_player == 1 else 1
+            elif self.config.mode == "player_vs_player":
+                self.winner = 2 if self.c4.current_player == 1 else 1
+            else:
+                self.winner = None
+            self.updated_at = time.time()
+            if not self.persisted:
+                self.persisted = True
+                just_finished = True
+
+        if just_finished and self.on_finish:
+            self.on_finish(self)
+        self._notify()
+        return just_finished
 
     def _advance_turn(self):
         self.c4.current_player = 2 if self.c4.current_player == 1 else 1
@@ -499,6 +528,7 @@ class GameSession:
                 else []
             ),
             status=self.status,
+            end_reason=self.end_reason,
             winner=self.winner,
             winning_cells=[cell[:] for cell in self.winning_cells],
             last_move=history_out[-1] if history_out else None,
@@ -747,6 +777,13 @@ class SessionManager:
         ]
         for sid in expired:
             sess = self._sessions.pop(sid)
+            if sess.status == "playing" and len(sess.move_history) > 0 and not sess.persisted:
+                sess.status = "forfeit"
+                sess.end_reason = "accidental_exit"
+                sess.persisted = True
+                if sess.config.mode == "human_vs_ai":
+                    sess.winner = 2 if sess.config.human_player == 1 else 1
+                self._on_session_finish(sess)
             if sess.room_code:
                 self._rooms.pop(sess.room_code, None)
             self._broadcast_admin("session_delete", {"session_id": sid})
@@ -855,7 +892,9 @@ class SessionManager:
             merged["ai2_depth"] = merged["ai_depth"]
             merged["ai2_level"] = None
 
-        starter_input = overrides.get("starting_player", merged["starting_player"])
+        starter_input = overrides.get("starting_player")
+        if starter_input is None:
+            starter_input = merged["starting_player"]
         random_flag = bool(
             overrides.get("random_start")
             if overrides.get("random_start") is not None
@@ -1105,6 +1144,7 @@ class SessionManager:
             ]
             session.c4.current_player = next_starter
             session.status = "playing"
+            session.end_reason = None
             session.winner = None
             session.winning_cells = []
             session.move_history = []

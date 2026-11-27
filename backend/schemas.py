@@ -89,6 +89,17 @@ class HumanMoveRequest(BaseModel):
     )
 
 
+ForfeitReason = Literal["manual_end", "abandon_restart", "accidental_exit"]
+
+
+class ForfeitGameRequest(BaseModel):
+    reason: ForfeitReason = "manual_end"
+
+
+class UsernameCheckRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=32)
+
+
 # --- Win a Prize ---
 
 
@@ -249,7 +260,8 @@ class GameStateResponse(BaseModel):
     grid: list[list[int]]
     current_player: Literal[1, 2]
     valid_columns: list[int]
-    status: Literal["playing", "win", "draw"]
+    status: Literal["playing", "win", "draw", "forfeit"]
+    end_reason: Optional[str] = None
     winner: Optional[Literal[1, 2]] = None
     winning_cells: list[list[int]] = Field(default_factory=list)
     last_move: Optional[MoveRecord] = None

@@ -1,7 +1,10 @@
 <script>
   import { onDestroy, onMount } from 'svelte';
   import {
+    checkUsername,
     createGame,
+    forfeitGame,
+    getGame,
     getGameWsUrl,
     playHumanMove,
     resetGame,
@@ -26,6 +29,7 @@
   import OnlineRoomView from './components/OnlineRoomView.svelte';
 
   const USERNAME_STORAGE_KEY = 'connect4_username';
+  const ACTIVE_SESSION_KEY = 'connect4_active_session';
 
   const DEFAULT_CONFIG = {
     rows: 6,
@@ -66,6 +70,7 @@
   let username = $state('');
   let usernameDraft = $state('');
   let usernameError = $state(null);
+  let savingUsername = $state(false);
   let showUsernameModal = $state(false);
   let soundOn = $state(isSoundEnabled());
 
@@ -74,7 +79,16 @@
   let isThinking = $state(false);
   let error = $state(null);
   let settingsOpen = $state(false);
+  let settingsError = $state(null);
+  let savingSettings = $state(false);
   let showInspector = $state(true);
+
+  let resumePromptGame = $state(null);
+  let resumeBusy = $state(false);
+  let restartConfirm = $state(null);
+  let restartBusy = $state(false);
+  let endGameConfirmOpen = $state(false);
+  let endingGame = $state(false);
 
   let isAutoPlaying = $state(false);
   let autoSpeedMs = $state(550);
@@ -90,6 +104,9 @@
       activeView === 'normal' &&
         !settingsOpen &&
         !showUsernameModal &&
+        !resumePromptGame &&
+        !restartConfirm &&
+        !endGameConfirmOpen &&
         game &&
         game.status === 'playing' &&
         !isThinking &&
@@ -101,6 +118,33 @@
   let settingsConfig = $derived(
     game?.config ?? { ...DEFAULT_CONFIG, username: username || 'Invité' }
   );
+
+  $effect(() => {
+    if (typeof window === 'undefined' || activeView !== 'normal' || !game) return;
+    if (
+      game.channel === 'normal' &&
+      game.status === 'playing' &&
+      (game.move_history?.length || 0) > 0
+    ) {
+      localStorage.setItem(ACTIVE_SESSION_KEY, game.session_id);
+    } else if (game.status !== 'playing' || (game.move_history?.length || 0) === 0) {
+      const stored = localStorage.getItem(ACTIVE_SESSION_KEY);
+      if (!stored || stored === game.session_id) {
+        localStorage.removeItem(ACTIVE_SESSION_KEY);
+      }
+    }
+  });
+
+  function isGameInProgress() {
+    return Boolean(game && game.status === 'playing' && (game.move_history?.length || 0) > 0);
+  }
+
+  function handleBeforeUnload(event) {
+    if (activeView === 'normal' && isGameInProgress()) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  }
 
   function closeGameSocket() {
     if (wsReconnectTimer) {
@@ -195,8 +239,8 @@
     }
     if (!username) {
       showUsernameModal = true;
-    } else if (!game && !isLoading) {
-      initSession({ ...DEFAULT_CONFIG, username });
+    } else if (!game && !resumePromptGame && !isLoading) {
+      checkSavedSessionOrStart(username);
     } else if (game?.session_id && !gameSocket) {
       connectGameSocket(game.session_id);
     }
@@ -470,18 +514,149 @@
     }
   }
 
+  function buildNextConfig(overrides = {}) {
+    const currentCfg = game?.config || DEFAULT_CONFIG;
+    return {
+      rows: currentCfg.rows,
+      cols: currentCfg.cols,
+      align: currentCfg.align,
+      mode: currentCfg.mode,
+      starting_player: currentCfg.starting_player,
+      human_player: currentCfg.human_player,
+      ai_level: currentCfg.ai_level,
+      ai2_level: currentCfg.ai2_level,
+      username: username || 'Invité',
+      player2_name: currentCfg.player2_name || 'Joueur 2',
+      random_start: false,
+      ...overrides,
+    };
+  }
+
+  function requestRestartWithConfirm(title, description, overrides = {}) {
+    if (isGameInProgress()) {
+      restartConfirm = {
+        title,
+        description,
+        overrides,
+      };
+      return;
+    }
+    handleNewGame(overrides);
+  }
+
+  async function handleConfirmRestart() {
+    if (!restartConfirm || restartBusy) return;
+    restartBusy = true;
+    const { overrides } = restartConfirm;
+    const nextCfg = buildNextConfig(overrides);
+    const oldSessionId = game?.session_id;
+    try {
+      if (oldSessionId) {
+        await forfeitGame(oldSessionId, 'abandon_restart');
+      }
+    } catch {
+      // Peut déjà être terminée ou expirée
+    } finally {
+      localStorage.removeItem(ACTIVE_SESSION_KEY);
+      restartConfirm = null;
+      restartBusy = false;
+    }
+    await initSession(nextCfg);
+  }
+
+  async function handleConfirmEndGame() {
+    if (!game || endingGame) return;
+    endingGame = true;
+    cancelPendingWork();
+    error = null;
+    try {
+      const ended = await forfeitGame(game.session_id, 'manual_end');
+      game = ended;
+      localStorage.removeItem(ACTIVE_SESSION_KEY);
+      endGameConfirmOpen = false;
+    } catch (err) {
+      error = err.message || 'Impossible de terminer la partie.';
+      endGameConfirmOpen = false;
+    } finally {
+      endingGame = false;
+    }
+  }
+
+  async function checkSavedSessionOrStart(savedUser) {
+    const savedSid = (localStorage.getItem(ACTIVE_SESSION_KEY) || '').trim();
+    if (savedSid) {
+      isLoading = true;
+      try {
+        const existing = await getGame(savedSid);
+        if (
+          existing &&
+          existing.channel === 'normal' &&
+          existing.status === 'playing' &&
+          (existing.move_history?.length || 0) > 0
+        ) {
+          isLoading = false;
+          resumePromptGame = existing;
+          return;
+        }
+      } catch {
+        // Session expirée ou introuvable
+      }
+      localStorage.removeItem(ACTIVE_SESSION_KEY);
+      isLoading = false;
+    }
+    await initSession({ ...DEFAULT_CONFIG, username: savedUser });
+  }
+
+  function handleResumeConfirm() {
+    if (!resumePromptGame) return;
+    const resumed = resumePromptGame;
+    resumePromptGame = null;
+    game = resumed;
+    connectGameSocket(resumed.session_id);
+    maybeTriggerOpeningHumanVsAiMove(resumed);
+  }
+
+  async function handleResumeDecline() {
+    if (!resumePromptGame || resumeBusy) return;
+    resumeBusy = true;
+    const abandonedId = resumePromptGame.session_id;
+    try {
+      await forfeitGame(abandonedId, 'accidental_exit');
+    } catch {
+      // Déjà expirée
+    } finally {
+      localStorage.removeItem(ACTIVE_SESSION_KEY);
+      resumePromptGame = null;
+      resumeBusy = false;
+    }
+    await initSession({ ...DEFAULT_CONFIG, username: username || 'Invité' });
+  }
+
   function handleRandomStart() {
-    handleNewGame({ starting_player: 'random', random_start: true });
+    requestRestartWithConfirm(
+      'Relancer avec tirage au sort ?',
+      'Une partie est déjà entamée. Relancer maintenant enregistrera la partie en cours comme un forfait (abandon).',
+      { starting_player: 'random', random_start: true }
+    );
   }
 
   function handleSwitchMode(newMode) {
     if (game?.config?.mode === newMode) return;
-    handleNewGame({ mode: newMode, starting_player: 1, random_start: false });
+    requestRestartWithConfirm(
+      'Changer de mode de jeu ?',
+      'Une partie est déjà entamée. Changer de mode enregistrera la partie actuelle comme un forfait (abandon).',
+      { mode: newMode, starting_player: 1, random_start: false }
+    );
   }
 
   function handleQuickLevel(newLevel) {
-    if (game?.config?.ai_level === newLevel) return;
-    handleNewGame({ ai_level: newLevel, ai2_level: newLevel });
+    if (!game || game.status !== 'playing') return;
+    if (game.config.ai_level === newLevel) return;
+    requestRestartWithConfirm(
+      'Changer la difficulté ?',
+      "Une partie est déjà entamée. Changer le niveau de l'IA enregistrera la partie actuelle comme un forfait (abandon) et en démarrera une nouvelle.",
+      { ai_level: newLevel, ai2_level: newLevel }
+    );
   }
 
   async function handleUndo() {
@@ -510,13 +685,32 @@
     }
   }
 
-  function handleApplySettings(newConfig) {
-    settingsOpen = false;
-    if (newConfig.username && newConfig.username !== username) {
-      username = newConfig.username;
-      localStorage.setItem(USERNAME_STORAGE_KEY, username);
+  async function handleApplySettings(newConfig) {
+    if (savingSettings) return;
+    savingSettings = true;
+    settingsError = null;
+    try {
+      const cleanUser = (newConfig.username || '').trim().slice(0, 32);
+      if (!cleanUser) {
+        settingsError = 'Veuillez saisir un pseudo valide.';
+        return;
+      }
+      await checkUsername(cleanUser);
+      if (newConfig.mode === 'player_vs_player' && newConfig.player2_name) {
+        await checkUsername(newConfig.player2_name.trim().slice(0, 32));
+      }
+      persistUsername(cleanUser);
+      settingsOpen = false;
+      requestRestartWithConfirm(
+        'Appliquer les nouveaux paramètres ?',
+        'Une partie est déjà entamée. Lancer une nouvelle partie avec ces paramètres enregistrera la partie actuelle comme un forfait (abandon).',
+        { ...newConfig, username: cleanUser }
+      );
+    } catch (err) {
+      settingsError = err.message || "Ce pseudo n'est pas autorisé.";
+    } finally {
+      savingSettings = false;
     }
-    handleNewGame(newConfig);
   }
 
   function persistUsername(cleaned) {
@@ -525,18 +719,32 @@
     localStorage.setItem(USERNAME_STORAGE_KEY, cleaned);
   }
 
-  function handleSaveUsername(event) {
+  async function handleSaveUsername(event) {
     event.preventDefault();
+    if (savingUsername) return;
     const cleaned = usernameDraft.trim().slice(0, 32);
     if (!cleaned) return;
+
+    savingUsername = true;
     usernameError = null;
-    const changed = cleaned !== username;
-    persistUsername(cleaned);
-    showUsernameModal = false;
-    if (!game) {
-      initSession({ ...DEFAULT_CONFIG, username: cleaned });
-    } else if (changed) {
-      handleNewGame({ username: cleaned });
+    try {
+      await checkUsername(cleaned);
+      const changed = cleaned !== username;
+      persistUsername(cleaned);
+      showUsernameModal = false;
+      if (!game && !resumePromptGame) {
+        checkSavedSessionOrStart(cleaned);
+      } else if (changed && game) {
+        requestRestartWithConfirm(
+          'Changer de pseudo ?',
+          'Une partie est déjà entamée. Pour appliquer votre nouveau pseudo immédiatement, la partie en cours sera enregistrée comme forfait (abandon).',
+          { username: cleaned }
+        );
+      }
+    } catch (err) {
+      usernameError = err.message || "Ce pseudo n'est pas autorisé. Veuillez en choisir un autre.";
+    } finally {
+      savingUsername = false;
     }
   }
 
@@ -549,12 +757,13 @@
   onMount(() => {
     window.addEventListener('popstate', handleUrlChange);
     window.addEventListener('hashchange', handleUrlChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
     const savedUser = (localStorage.getItem(USERNAME_STORAGE_KEY) || '').trim();
     if (savedUser) {
       username = savedUser;
       usernameDraft = savedUser;
       if (activeView === 'normal') {
-        initSession({ ...DEFAULT_CONFIG, username: savedUser });
+        checkSavedSessionOrStart(savedUser);
       }
     } else if (activeView === 'normal') {
       showUsernameModal = true;
@@ -565,6 +774,7 @@
     if (typeof window !== 'undefined') {
       window.removeEventListener('popstate', handleUrlChange);
       window.removeEventListener('hashchange', handleUrlChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
     }
     cancelPendingWork();
     closeGameSocket();
@@ -650,14 +860,6 @@
               <span class="text-[10px] text-slate-500">Modifier</span>
             </button>
           {/if}
-
-          <button
-            type="button"
-            onclick={() => navigateTo('admin')}
-            class="rounded-full border border-slate-800 bg-slate-900/70 px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:border-slate-600 hover:text-slate-200"
-          >
-            Admin
-          </button>
         </div>
       </header>
 
@@ -701,18 +903,26 @@
             {autoSpeedMs}
             {showInspector}
             onNewGame={() =>
-              handleNewGame({
-                starting_player: game?.config?.random_start
-                  ? 1
-                  : game?.config?.starting_player || 1,
-                random_start: false,
-              })}
+              requestRestartWithConfirm(
+                'Recommencer une nouvelle partie ?',
+                'Une partie est déjà entamée. Lancer une nouvelle partie enregistrera celle-ci comme un forfait (abandon).',
+                {
+                  starting_player: game?.config?.random_start
+                    ? 1
+                    : game?.config?.starting_player || 1,
+                  random_start: false,
+                }
+              )}
             onRandomStart={handleRandomStart}
+            onEndGame={() => (endGameConfirmOpen = true)}
             onPlayWithFriend={() => navigateTo('room', '')}
             onSwitchMode={handleSwitchMode}
             onQuickLevel={handleQuickLevel}
             onUndo={handleUndo}
-            onOpenSettings={() => (settingsOpen = true)}
+            onOpenSettings={() => {
+              settingsError = null;
+              settingsOpen = true;
+            }}
             onToggleInspector={() => (showInspector = !showInspector)}
             onStepAi={runAiStep}
             onToggleAutoPlay={handleToggleAutoPlay}
@@ -757,43 +967,164 @@
             type="text"
             required
             maxlength="32"
+            disabled={savingUsername}
             bind:value={usernameDraft}
             placeholder="ex. Ayoube"
-            class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+            class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none disabled:opacity-60"
           />
 
-          <div class="flex items-center justify-between gap-2">
-            {#if !username || usernameError}
+          <div class="flex items-center justify-end gap-2">
+            {#if username && !usernameError}
               <button
                 type="button"
-                onclick={() => navigateTo('admin')}
-                class="text-xs font-medium text-slate-500 hover:text-slate-300"
+                disabled={savingUsername}
+                onclick={() => (showUsernameModal = false)}
+                class="rounded-xl border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50"
               >
-                Connexion Admin
+                Annuler
               </button>
-            {:else}
-              <span></span>
             {/if}
-
-            <div class="flex items-center gap-2">
-              {#if username && !usernameError}
-                <button
-                  type="button"
-                  onclick={() => (showUsernameModal = false)}
-                  class="rounded-xl border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800"
-                >
-                  Annuler
-                </button>
-              {/if}
-              <button
-                type="submit"
-                class="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500"
-              >
-                {username && !usernameError ? 'Enregistrer' : 'Commencer à jouer'}
-              </button>
-            </div>
+            <button
+              type="submit"
+              disabled={savingUsername}
+              class="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {savingUsername
+                ? 'Vérification…'
+                : username && !usernameError
+                  ? 'Enregistrer'
+                  : 'Commencer à jouer'}
+            </button>
           </div>
         </form>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Pop-up Reprendre une partie interrompue -->
+  {#if resumePromptGame}
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div class="w-full max-w-md rounded-2xl border border-indigo-500/40 bg-slate-900 p-6 shadow-2xl">
+        <div class="flex items-center gap-3">
+          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-500/20 text-indigo-300">
+            ⏸
+          </div>
+          <div>
+            <h2 class="text-base font-bold text-white">Partie interrompue détectée</h2>
+            <p class="text-xs text-slate-400">
+              Vous avez quitté une partie en cours ({resumePromptGame.move_history.length} coups joués ·
+              {resumePromptGame.config.rows}×{resumePromptGame.config.cols}).
+            </p>
+          </div>
+        </div>
+
+        <p class="mt-4 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-xs leading-relaxed text-slate-300">
+          Souhaitez-vous reprendre cette partie là où vous l'avez laissée ? Si vous cliquez sur
+          <strong class="text-rose-300">Non</strong>, elle sera enregistrée comme
+          <strong class="text-rose-300">Forfait (Sortie involontaire)</strong>.
+        </p>
+
+        <div class="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            disabled={resumeBusy}
+            onclick={handleResumeDecline}
+            class="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50"
+          >
+            {resumeBusy ? 'Enregistrement…' : 'Non (Forfait)'}
+          </button>
+          <button
+            type="button"
+            disabled={resumeBusy}
+            onclick={handleResumeConfirm}
+            class="rounded-xl bg-indigo-600 px-5 py-2 text-xs font-semibold text-white shadow hover:bg-indigo-500 disabled:opacity-50"
+          >
+            Oui, reprendre la partie
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Pop-up Avertissement avant de relancer une partie déjà commencée -->
+  {#if restartConfirm}
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
+      role="alertdialog"
+      aria-modal="true"
+    >
+      <div class="w-full max-w-md rounded-2xl border border-amber-500/45 bg-slate-900 p-6 shadow-2xl">
+        <div class="flex items-center gap-3">
+          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-500/20 text-amber-300">
+            ⚠️
+          </div>
+          <div>
+            <h2 class="text-base font-bold text-amber-200">{restartConfirm.title}</h2>
+            <p class="text-xs text-slate-400">Partie en cours ({game?.move_history?.length || 0} coups joués)</p>
+          </div>
+        </div>
+
+        <p class="mt-4 rounded-xl border border-amber-500/25 bg-amber-950/30 p-3 text-xs leading-relaxed text-amber-100">
+          {restartConfirm.description}
+        </p>
+
+        <div class="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            disabled={restartBusy}
+            onclick={() => (restartConfirm = null)}
+            class="rounded-xl border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+          >
+            Continuer la partie
+          </button>
+          <button
+            type="button"
+            disabled={restartBusy}
+            onclick={handleConfirmRestart}
+            class="rounded-xl bg-rose-600 px-4 py-2 text-xs font-semibold text-white shadow hover:bg-rose-500 disabled:opacity-50"
+          >
+            {restartBusy ? 'Enregistrement…' : 'Abandonner et relancer'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Pop-up Confirmation Fin de partie -->
+  {#if endGameConfirmOpen}
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
+      role="alertdialog"
+      aria-modal="true"
+    >
+      <div class="w-full max-w-md rounded-2xl border border-amber-500/40 bg-slate-900 p-6 shadow-2xl">
+        <h2 class="text-base font-bold text-white">Terminer et enregistrer la partie ?</h2>
+        <p class="mt-2 text-xs leading-relaxed text-slate-300">
+          La partie en cours ({game?.move_history?.length || 0} coups) sera clôturée et sauvegardée dans
+          l'historique en tant que <strong class="text-amber-300">Fin manuelle</strong> au lieu de rester active.
+        </p>
+        <div class="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            disabled={endingGame}
+            onclick={() => (endGameConfirmOpen = false)}
+            class="rounded-xl border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+          >
+            Annuler
+          </button>
+          <button
+            type="button"
+            disabled={endingGame}
+            onclick={handleConfirmEndGame}
+            class="rounded-xl bg-amber-600 px-4 py-2 text-xs font-semibold text-white shadow hover:bg-amber-500 disabled:opacity-50"
+          >
+            {endingGame ? 'Enregistrement…' : 'Confirmer la fin de partie'}
+          </button>
+        </div>
       </div>
     </div>
   {/if}
@@ -801,7 +1132,12 @@
   <GameSettingsModal
     open={settingsOpen}
     config={settingsConfig}
-    onClose={() => (settingsOpen = false)}
+    error={settingsError}
+    saving={savingSettings}
+    onClose={() => {
+      settingsError = null;
+      settingsOpen = false;
+    }}
     onApply={handleApplySettings}
   />
 {/if}

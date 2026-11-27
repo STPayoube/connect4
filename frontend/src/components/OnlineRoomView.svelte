@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import QRCode from 'qrcode';
   import {
+    checkUsername,
     createRoom,
     getRoom,
     getRoomStreamUrl,
@@ -37,6 +38,7 @@
 
   let nameInput = $state('');
   let needsName = $state(false);
+  let savingName = $state(false);
 
   let socket = null;
   let eventSource = null;
@@ -312,16 +314,26 @@
     }
   }
 
-  function handleNameSubmit(event) {
+  async function handleNameSubmit(event) {
     event.preventDefault();
+    if (savingName) return;
     const cleaned = nameInput.trim().slice(0, 32);
     if (!cleaned) return;
-    needsName = false;
-    onSaveUsername(cleaned);
-    if (initialCode) {
-      enterExistingRoom(initialCode, cleaned);
-    } else {
-      hostNewRoom(cleaned);
+    savingName = true;
+    error = null;
+    try {
+      await checkUsername(cleaned);
+      needsName = false;
+      onSaveUsername(cleaned);
+      if (initialCode) {
+        enterExistingRoom(initialCode, cleaned);
+      } else {
+        hostNewRoom(cleaned);
+      }
+    } catch (err) {
+      error = err.message || "Ce pseudo n'est pas autorisé. Veuillez en choisir un autre.";
+    } finally {
+      savingName = false;
     }
   }
 
@@ -445,15 +457,21 @@
             type="text"
             required
             maxlength="32"
+            disabled={savingName}
             bind:value={nameInput}
             placeholder="Votre pseudo"
-            class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+            class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none disabled:opacity-60"
           />
           <button
             type="submit"
-            class="w-full rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-500"
+            disabled={savingName}
+            class="w-full rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {initialCode ? 'Rejoindre la partie' : 'Créer le salon & QR Code'}
+            {savingName
+              ? 'Vérification…'
+              : initialCode
+                ? 'Rejoindre la partie'
+                : 'Créer le salon & QR Code'}
           </button>
         </form>
       </div>

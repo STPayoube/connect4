@@ -9,6 +9,7 @@
     showInspector = true,
     onNewGame = () => {},
     onRandomStart = () => {},
+    onEndGame = () => {},
     onPlayWithFriend = () => {},
     onSwitchMode = () => {},
     onQuickLevel = () => {},
@@ -23,6 +24,10 @@
   let currentMode = $derived(game?.config?.mode || 'human_vs_ai');
   let isAiVsAi = $derived(currentMode === 'ai_vs_ai');
   let isHumanVsAi = $derived(currentMode === 'human_vs_ai');
+  let isFinished = $derived(Boolean(game && game.status !== 'playing'));
+  let canEndGame = $derived(
+    Boolean(game && game.status === 'playing' && (game.move_history?.length || 0) > 0)
+  );
   let activeIsAi = $derived(
     game?.status === 'playing' && game?.players?.[String(game.current_player)]?.type === 'ai'
   );
@@ -52,22 +57,32 @@
 
   <!-- Niveau IA rapide -->
   {#if isHumanVsAi && game}
-    <div class="rounded-xl border border-slate-800/90 bg-slate-900/70 p-2.5">
+    <div
+      class="rounded-xl border border-slate-800/90 bg-slate-900/70 p-2.5 {isFinished
+        ? 'opacity-60'
+        : ''}"
+    >
       <div class="mb-1.5 flex items-center justify-between">
         <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
           Niveau de l'IA
         </span>
-        <span class="text-[11px] text-slate-500">Nouvelle partie</span>
+        <span class="text-[11px] text-slate-500">
+          {isFinished ? 'Partie terminée' : 'Nouvelle partie'}
+        </span>
       </div>
       <div class="grid grid-cols-4 gap-1.5">
         {#each LEVELS as lvl}
           <button
             type="button"
+            disabled={isFinished}
+            title={isFinished
+              ? 'Lancez une nouvelle partie pour changer la difficulté'
+              : `Jouer en difficulté ${lvl.label}`}
             onclick={() => onQuickLevel(lvl.id)}
-            class="rounded-lg border px-1 py-1.5 text-center text-[11px] font-semibold transition {game
+            class="rounded-lg border px-1 py-1.5 text-center text-[11px] font-semibold transition disabled:cursor-not-allowed {game
               .config.ai_level === lvl.id
               ? lvl.active
-              : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:border-slate-700 hover:text-slate-200'}"
+              : 'border-slate-800 bg-slate-950/60 text-slate-400 enabled:hover:border-slate-700 enabled:hover:text-slate-200'}"
           >
             {lvl.short}
           </button>
@@ -123,6 +138,21 @@
       Aléatoire
     </button>
   </div>
+
+  {#if canEndGame}
+    <button
+      type="button"
+      onclick={onEndGame}
+      disabled={isThinking}
+      class="flex w-full items-center justify-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+      title="Mettre fin à la partie en cours et l'enregistrer dans l'historique"
+    >
+      <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4 21V5a1 1 0 011-1h10l-1.5 4L15 12H5" />
+      </svg>
+      Fin de partie (Enregistrer)
+    </button>
+  {/if}
 
   <!-- Actions secondaires -->
   <div class="flex items-center gap-2">

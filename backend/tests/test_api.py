@@ -414,3 +414,91 @@ def test_websockets_game_room_and_admin():
         assert r_upd["event"] == "room_update"
         assert len(r_upd["data"]["move_history"]) == 1
 
+
+def test_reset_difficulty_mid_game_without_starting_player_no_500():
+    """Regression test: changing ai_level via POST /reset with starting_player omitted (None)."""
+    create = client.post(
+        "/api/games",
+        json={"username": "ResetTester", "ai_level": "medium", "mode": "human_vs_ai"},
+    )
+    assert create.status_code == 201
+    sid = create.json()["session_id"]
+
+    # Play one move first
+    mv = client.post(f"/api/games/{sid}/move", json={"col": 3})
+    assert mv.status_code == 200
+
+    # Reset changing only ai_level (mirrors frontend handleQuickLevel payload)
+    rst = client.post(
+        f"/api/games/{sid}/reset",
+        json={"ai_level": "hard", "ai2_level": "hard", "username": "ResetTester"},
+    )
+    assert rst.status_code == 200
+    data = rst.json()
+    assert data["status"] == "playing"
+    assert data["config"]["ai_level"] == "hard"
+    assert data["move_history"] == []
+
+
+def test_default_blacklist_and_username_check_endpoint():
+    headers = _admin_headers()
+
+    # Built-in default blacklist should already block slurs, profanity, leetspeak, accents, admin
+    assert client.post("/api/username/check", json={"username": "Ayoube"}).status_code == 200
+    assert client.post("/api/username/check", json={"username": "Rapide"}).status_code == 200
+    assert client.post("/api/username/check", json={"username": "admin"}).status_code == 403
+    assert client.post("/api/username/check", json={"username": "f.u.c.k"}).status_code == 403
+    assert client.post("/api/username/check", json={"username": "p0rnStar"}).status_code == 403
+    assert client.post("/api/username/check", json={"username": "Connárd99"}).status_code == 403
+
+    # Seed defaults endpoint should be idempotent
+    seed = client.post("/api/admin/blacklist/seed-defaults", headers=headers)
+    assert seed.status_code == 200
+    assert seed.json()["added"] == 0
+    assert len(seed.json()["entries"]) >= 70
+
+
+def test_forfeit_reasons_and_distinct_stats():
+    headers = _admin_headers()
+
+    # 1. Manual end ("Fin de partie")
+    g1 = client.post("/api/games", json={"username": "ForfeitUser1", "ai_level": "easy"}).json()
+    client.post(f"/api/games/{g1['session_id']}/move", json={"col": 3})
+    f1 = client.post(f"/api/games/{g1['session_id']}/forfeit", json={"reason": "manual_end"})
+    assert f1.status_code == 200
+    assert f1.json()["status"] == "forfeit"
+    assert f1.json()["end_reason"] == "manual_end"
+
+    # 2. Voluntary abandon / restart
+    g2 = client.post("/api/games", json={"username": "ForfeitUser2", "ai_level": "easy"}).json()
+    client.post(f"/api/games/{g2['session_id']}/move", json={"col": 2})
+    f2 = client.post(f"/api/games/{g2['session_id']}/forfeit", json={"reason": "abandon_restart"})
+    assert f2.status_code == 200
+    assert f2.json()["status"] == "forfeit"
+    assert f2.json()["end_reason"] == "abandon_restart"
+
+    # 3. Accidental exit (user clicked "Non" on resume pop-up)
+    g3 = client.post("/api/games", json={"username": "ForfeitUser3", "ai_level": "easy"}).json()
+    client.post(f"/api/games/{g3['session_id']}/move", json={"col": 4})
+    f3 = client.post(f"/api/games/{g3['session_id']}/forfeit", json={"reason": "accidental_exit"})
+    assert f3.status_code == 200
+    assert f3.json()["status"] == "forfeit"
+    assert f3.json()["end_reason"] == "accidental_exit"
+
+    # Verify stats distinguish all 3 forfeit types
+    stats = client.get("/api/admin/stats", headers=headers).json()
+    assert stats["normal"]["forfeit_manual"] >= 1
+    assert stats["normal"]["forfeit_abandon"] >= 1
+    assert stats["normal"]["forfeit_exit"] >= 1
+
+    # Verify history outcome filtering works for each distinct forfeit type
+    h_manual = client.get("/api/admin/history?outcome=forfeit_manual", headers=headers).json()
+    assert any(r["username"] == "ForfeitUser1" for r in h_manual["records"])
+
+    h_abandon = client.get("/api/admin/history?outcome=forfeit_abandon", headers=headers).json()
+    assert any(r["username"] == "ForfeitUser2" for r in h_abandon["records"])
+
+    h_exit = client.get("/api/admin/history?outcome=forfeit_exit", headers=headers).json()
+    assert any(r["username"] == "ForfeitUser3" for r in h_exit["records"])
+
+

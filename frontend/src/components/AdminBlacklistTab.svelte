@@ -4,6 +4,7 @@
     adminAddBlacklist,
     adminDeleteBlacklist,
     adminListBlacklist,
+    adminSeedDefaultBlacklist,
   } from '../lib/api.js';
 
   let { token = '' } = $props();
@@ -12,9 +13,21 @@
   let pattern = $state('');
   let matchType = $state('exact');
   let reason = $state('');
+  let searchFilter = $state('');
   let loading = $state(true);
   let saving = $state(false);
+  let seeding = $state(false);
   let error = $state(null);
+  let info = $state(null);
+
+  let filteredEntries = $derived.by(() => {
+    const q = searchFilter.trim().toLowerCase();
+    if (!q) return entries;
+    return entries.filter(
+      (e) =>
+        e.pattern.toLowerCase().includes(q) || (e.reason || '').toLowerCase().includes(q)
+    );
+  });
 
   async function loadEntries() {
     if (!token) return;
@@ -54,6 +67,25 @@
       entries = entries.filter((e) => e.id !== id);
     } catch (err) {
       error = err.message || 'Impossible de supprimer cette entrée.';
+    }
+  }
+
+  async function handleSeedDefaults() {
+    if (seeding) return;
+    seeding = true;
+    error = null;
+    info = null;
+    try {
+      const res = await adminSeedDefaultBlacklist(token);
+      entries = res.entries || [];
+      info =
+        res.added > 0
+          ? `${res.added} entrées par défaut (insultes, slurs FR/EN, noms réservés) ajoutées.`
+          : 'La liste noire par défaut est déjà complète.';
+    } catch (err) {
+      error = err.message || 'Impossible de charger la liste par défaut.';
+    } finally {
+      seeding = false;
     }
   }
 
@@ -128,26 +160,56 @@
 
   <!-- Liste active -->
   <div class="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
-    <div class="mb-3 flex items-center justify-between">
-      <h2 class="text-sm font-bold text-white">Liste noire active ({entries.length})</h2>
-      <button
-        type="button"
-        onclick={loadEntries}
-        class="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-700"
-      >
-        Actualiser
-      </button>
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 class="text-sm font-bold text-white">
+        Liste noire active ({filteredEntries.length} / {entries.length})
+      </h2>
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={seeding}
+          onclick={handleSeedDefaults}
+          class="rounded-lg border border-indigo-500/40 bg-indigo-500/15 px-2.5 py-1 text-xs font-semibold text-indigo-200 hover:bg-indigo-500/25 disabled:opacity-50"
+          title="Réimporter les insultes FR/EN, slurs et pseudos réservés manquants"
+        >
+          {seeding ? 'Import…' : 'Charger la liste par défaut'}
+        </button>
+        <button
+          type="button"
+          onclick={loadEntries}
+          class="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-700"
+        >
+          Actualiser
+        </button>
+      </div>
+    </div>
+
+    {#if info}
+      <div class="mb-3 rounded-xl border border-emerald-500/40 bg-emerald-950/50 px-3 py-2 text-xs text-emerald-200">
+        {info}
+      </div>
+    {/if}
+
+    <div class="mb-3">
+      <input
+        type="search"
+        bind:value={searchFilter}
+        placeholder="Filtrer dans la liste noire (mot ou motif)…"
+        class="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+      />
     </div>
 
     {#if loading}
       <p class="py-10 text-center text-xs text-slate-500">Chargement de la liste noire…</p>
-    {:else if entries.length === 0}
+    {:else if filteredEntries.length === 0}
       <p class="rounded-xl border border-dashed border-slate-800 py-10 text-center text-xs text-slate-500">
-        Aucun pseudo n'est actuellement banni.
+        {entries.length === 0
+          ? "Aucun pseudo n'est actuellement banni."
+          : 'Aucune entrée ne correspond à votre recherche.'}
       </p>
     {:else}
-      <ul class="divide-y divide-slate-800/80">
-        {#each entries as entry (entry.id)}
+      <ul class="thin-scroll max-h-[520px] divide-y divide-slate-800/80 overflow-y-auto pr-1">
+        {#each filteredEntries as entry (entry.id)}
           <li class="flex items-center justify-between gap-3 py-2.5 text-xs">
             <div class="min-w-0">
               <div class="flex items-center gap-2">

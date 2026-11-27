@@ -1,10 +1,14 @@
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Optional
+
+from blacklist_defaults import DEFAULT_BLACKLIST_ENTRIES
 
 DEFAULT_WINAPRIZE_CONFIG: dict[str, Any] = {
     "enabled": True,
@@ -20,15 +24,47 @@ DEFAULT_WINAPRIZE_CONFIG: dict[str, Any] = {
     "subtitle": "Battez l'IA pour gagner un prix !",
 }
 
+_LEET_TRANS = str.maketrans(
+    {
+        "0": "o",
+        "1": "i",
+        "3": "e",
+        "4": "a",
+        "5": "s",
+        "7": "t",
+        "@": "a",
+        "$": "s",
+        "!": "i",
+    }
+)
+
+
+def _strip_accents(text: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+
 
 def normalize_username(name: str) -> str:
-    return " ".join((name or "").strip().lower().split())
+    folded = _strip_accents((name or "").strip().lower())
+    return " ".join(folded.split())
+
+
+def _compact_leet(text: str) -> str:
+    folded = _strip_accents((text or "").strip().lower()).translate(_LEET_TRANS)
+    return re.sub(r"[^a-z0-9]", "", folded)
+
+
+def _tokenize_words(text: str) -> set[str]:
+    folded = _strip_accents((text or "").strip().lower())
+    tokens = set(re.findall(r"[a-z0-9]+", folded))
+    leet_tokens = set(re.findall(r"[a-z0-9]+", folded.translate(_LEET_TRANS)))
+    return tokens | leet_tokens
 
 
 class Database:
     """Thread-safe SQLite (WAL mode) persistence layer for games, settings, and blacklist."""
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, seed_blacklist: bool = True):
         env_path = os.getenv("CONNECT4_DB_PATH")
         if db_path is not None:
             resolved = Path(db_path)
@@ -40,7 +76,7 @@ class Database:
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.db_path = str(resolved)
         self._lock = threading.Lock()
-        self._init_schema()
+        self._init_schema(seed_blacklist=seed_blacklist)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=15.0, check_same_thread=False)
@@ -49,7 +85,7 @@ class Database:
         conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
 
-    def _init_schema(self):
+    def _init_schema(self, seed_blacklist: bool = True):
         with self._lock, self._connect() as conn:
             conn.executescript(
                 """
@@ -69,6 +105,7 @@ class Database:
                     starting_player INTEGER NOT NULL,
                     human_player INTEGER,
                     status TEXT NOT NULL,
+                    end_reason TEXT NOT NULL DEFAULT 'win',
                     winner INTEGER,
                     winner_name TEXT,
                     human_outcome TEXT,
@@ -104,6 +141,20 @@ class Database:
                 );
                 """
             )
+
+            # Safe schema migration for existing VPS databases created before end_reason
+            cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(game_records)").fetchall()
+            }
+            if "end_reason" not in cols:
+                conn.execute(
+                    "ALTER TABLE game_records ADD COLUMN end_reason TEXT NOT NULL DEFAULT 'win'"
+                )
+                conn.execute(
+                    "UPDATE game_records SET end_reason = CASE WHEN status = 'draw' THEN 'draw' ELSE 'win' END"
+                )
+
             row = conn.execute(
                 "SELECT key FROM app_settings WHERE key = 'winaprize_config'"
             ).fetchone()
@@ -112,6 +163,26 @@ class Database:
                     "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)",
                     ("winaprize_config", json.dumps(DEFAULT_WINAPRIZE_CONFIG), time.time()),
                 )
+
+            # Seed built-in moderation blacklist once automatically
+            if seed_blacklist:
+                seeded = conn.execute(
+                    "SELECT key FROM app_settings WHERE key = 'blacklist_seeded_v1'"
+                ).fetchone()
+                if seeded is None:
+                    now = time.time()
+                    for pat, mtype, reason in DEFAULT_BLACKLIST_ENTRIES:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO username_blacklist (pattern, match_type, reason, created_at)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (normalize_username(pat), mtype, reason, now),
+                        )
+                    conn.execute(
+                        "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)",
+                        ("blacklist_seeded_v1", json.dumps({"seeded": True}), now),
+                    )
 
     # --- Win a Prize Config ---
 
@@ -144,10 +215,25 @@ class Database:
 
     # --- Username Blacklist ---
 
+    def seed_default_blacklist(self) -> int:
+        now = time.time()
+        added = 0
+        with self._lock, self._connect() as conn:
+            for pat, mtype, reason in DEFAULT_BLACKLIST_ENTRIES:
+                cur = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO username_blacklist (pattern, match_type, reason, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (normalize_username(pat), mtype, reason, now),
+                )
+                added += cur.rowcount
+        return added
+
     def list_blacklist(self) -> list[dict[str, Any]]:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, pattern, match_type, reason, created_at FROM username_blacklist ORDER BY created_at DESC"
+                "SELECT id, pattern, match_type, reason, created_at FROM username_blacklist ORDER BY created_at DESC, id DESC"
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -156,9 +242,9 @@ class Database:
     ) -> dict[str, Any]:
         norm = normalize_username(pattern)
         if not norm:
-            raise ValueError("Blacklist pattern cannot be empty.")
+            raise ValueError("Le motif de liste noire ne peut pas être vide.")
         if match_type not in ("exact", "contains"):
-            raise ValueError("match_type must be 'exact' or 'contains'.")
+            raise ValueError("match_type doit être 'exact' ou 'contains'.")
         now = time.time()
         with self._lock, self._connect() as conn:
             conn.execute(
@@ -186,17 +272,24 @@ class Database:
         norm = normalize_username(username)
         if not norm:
             return False, None
+        compact = _compact_leet(username)
+        words = _tokenize_words(username)
+
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT pattern, match_type, reason FROM username_blacklist"
             ).fetchall()
+
         for row in rows:
             pat = row["pattern"]
             mtype = row["match_type"]
-            if mtype == "exact" and norm == pat:
-                return True, row["reason"] or None
-            if mtype == "contains" and pat in norm:
-                return True, row["reason"] or None
+            pat_compact = _compact_leet(pat)
+            if mtype == "exact":
+                if norm == pat or compact == pat_compact or pat in words:
+                    return True, row["reason"] or None
+            elif mtype == "contains":
+                if pat in norm or (len(pat_compact) >= 4 and pat_compact in compact):
+                    return True, row["reason"] or None
         return False, None
 
     # --- Finished Game Records ---
@@ -207,11 +300,25 @@ class Database:
         channel = snapshot.get("channel", "normal")
         mode = cfg["mode"]
         status = snapshot["status"]
+        end_reason = snapshot.get("end_reason") or (
+            "draw" if status == "draw" else "win"
+        )
         winner = snapshot.get("winner")
-        winner_name = players[str(winner)]["name"] if winner is not None and str(winner) in players else None
+        winner_name = (
+            players[str(winner)]["name"]
+            if winner is not None and str(winner) in players
+            else None
+        )
 
         human_outcome: Optional[str] = None
-        if mode == "human_vs_ai":
+        if status == "forfeit":
+            if end_reason == "accidental_exit":
+                human_outcome = "forfeit_exit"
+            elif end_reason == "abandon_restart":
+                human_outcome = "forfeit_abandon"
+            else:
+                human_outcome = "forfeit_manual"
+        elif mode == "human_vs_ai":
             if status == "draw":
                 human_outcome = "draw"
             elif winner == cfg["human_player"]:
@@ -225,8 +332,8 @@ class Database:
         finished_at = float(snapshot.get("updated_at", time.time()))
         duration = round(max(0.0, finished_at - created_at), 2)
 
-        p1_name = players.get("1", {}).get("name", snapshot.get("username", "Guest"))
-        p2_name = players.get("2", {}).get("name", cfg.get("player2_name", "Player 2"))
+        p1_name = players.get("1", {}).get("name", snapshot.get("username", "Invité"))
+        p2_name = players.get("2", {}).get("name", cfg.get("player2_name", "Joueur 2"))
 
         with self._lock, self._connect() as conn:
             cur = conn.execute(
@@ -234,10 +341,10 @@ class Database:
                 INSERT INTO game_records (
                     session_id, channel, room_code, mode, username, player2_name,
                     rows, cols, align, ai_level, ai2_level, starting_player,
-                    human_player, status, winner, winner_name, human_outcome,
+                    human_player, status, end_reason, winner, winner_name, human_outcome,
                     total_plies, duration_seconds, final_grid_json,
                     move_history_json, winning_cells_json, created_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snapshot["session_id"],
@@ -254,6 +361,7 @@ class Database:
                     int(cfg["starting_player"]),
                     int(cfg["human_player"]) if mode == "human_vs_ai" else None,
                     status,
+                    end_reason,
                     winner,
                     winner_name,
                     human_outcome,
@@ -283,9 +391,18 @@ class Database:
             clauses.append("channel = ?")
             params.append(channel)
         if outcome and outcome != "all":
-            if outcome in ("win", "loss", "draw"):
+            if outcome in (
+                "win",
+                "loss",
+                "draw",
+                "forfeit_abandon",
+                "forfeit_exit",
+                "forfeit_manual",
+            ):
                 clauses.append("human_outcome = ?")
                 params.append(outcome)
+            elif outcome == "forfeit_any":
+                clauses.append("status = 'forfeit'")
         if search and search.strip():
             like = f"%{search.strip().lower()}%"
             clauses.append(
@@ -305,7 +422,7 @@ class Database:
                 f"""
                 SELECT id, session_id, channel, room_code, mode, username, player2_name,
                        rows, cols, align, ai_level, ai2_level, starting_player,
-                       human_player, status, winner, winner_name, human_outcome,
+                       human_player, status, end_reason, winner, winner_name, human_outcome,
                        total_plies, duration_seconds, created_at, finished_at
                 FROM game_records
                 {where_sql}
@@ -342,7 +459,10 @@ class Database:
                 SELECT COUNT(*) AS total_games,
                        COUNT(DISTINCT LOWER(username)) AS unique_players,
                        COALESCE(AVG(total_plies), 0) AS avg_plies,
-                       COALESCE(AVG(duration_seconds), 0) AS avg_duration_s
+                       COALESCE(AVG(duration_seconds), 0) AS avg_duration_s,
+                       SUM(CASE WHEN human_outcome = 'forfeit_abandon' THEN 1 ELSE 0 END) AS forfeit_abandon,
+                       SUM(CASE WHEN human_outcome = 'forfeit_exit' THEN 1 ELSE 0 END) AS forfeit_exit,
+                       SUM(CASE WHEN human_outcome = 'forfeit_manual' THEN 1 ELSE 0 END) AS forfeit_manual
                 FROM game_records
                 """
             ).fetchone()
@@ -354,6 +474,9 @@ class Database:
                            SUM(CASE WHEN human_outcome = 'win' THEN 1 ELSE 0 END) AS human_wins,
                            SUM(CASE WHEN human_outcome = 'loss' THEN 1 ELSE 0 END) AS ai_wins,
                            SUM(CASE WHEN human_outcome = 'draw' THEN 1 ELSE 0 END) AS draws,
+                           SUM(CASE WHEN human_outcome = 'forfeit_abandon' THEN 1 ELSE 0 END) AS forfeit_abandon,
+                           SUM(CASE WHEN human_outcome = 'forfeit_exit' THEN 1 ELSE 0 END) AS forfeit_exit,
+                           SUM(CASE WHEN human_outcome = 'forfeit_manual' THEN 1 ELSE 0 END) AS forfeit_manual,
                            COUNT(DISTINCT LOWER(username)) AS unique_players,
                            COALESCE(AVG(total_plies), 0) AS avg_plies
                     FROM game_records
@@ -372,7 +495,8 @@ class Database:
                            COUNT(*) AS total,
                            SUM(CASE WHEN human_outcome = 'win' THEN 1 ELSE 0 END) AS human_wins,
                            SUM(CASE WHEN human_outcome = 'loss' THEN 1 ELSE 0 END) AS ai_wins,
-                           SUM(CASE WHEN human_outcome = 'draw' THEN 1 ELSE 0 END) AS draws
+                           SUM(CASE WHEN human_outcome = 'draw' THEN 1 ELSE 0 END) AS draws,
+                           SUM(CASE WHEN status = 'forfeit' THEN 1 ELSE 0 END) AS forfeits
                     FROM game_records
                     WHERE channel = ? AND mode = 'human_vs_ai'
                     GROUP BY COALESCE(ai_level, 'medium')
@@ -392,6 +516,7 @@ class Database:
                             "human_wins": lh,
                             "ai_wins": int(lr["ai_wins"] or 0),
                             "draws": int(lr["draws"] or 0),
+                            "forfeits": int(lr["forfeits"] or 0),
                             "win_rate_pct": round((lh / lt) * 100, 1) if lt else 0.0,
                         }
                     )
@@ -401,6 +526,9 @@ class Database:
                     "human_wins": hwins,
                     "ai_wins": aiwins,
                     "draws": draws,
+                    "forfeit_abandon": int(row["forfeit_abandon"] or 0),
+                    "forfeit_exit": int(row["forfeit_exit"] or 0),
+                    "forfeit_manual": int(row["forfeit_manual"] or 0),
                     "win_rate_pct": round((hwins / total) * 100, 1) if total else 0.0,
                     "unique_players": int(row["unique_players"] or 0),
                     "avg_plies": round(float(row["avg_plies"] or 0), 1),
@@ -470,6 +598,9 @@ class Database:
                 "unique_players": int(overall_row["unique_players"] or 0),
                 "avg_plies": round(float(overall_row["avg_plies"] or 0), 1),
                 "avg_duration_s": round(float(overall_row["avg_duration_s"] or 0), 1),
+                "forfeit_abandon": int(overall_row["forfeit_abandon"] or 0),
+                "forfeit_exit": int(overall_row["forfeit_exit"] or 0),
+                "forfeit_manual": int(overall_row["forfeit_manual"] or 0),
             },
             "winaprize": prize_stats,
             "normal": normal_stats,

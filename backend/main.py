@@ -31,6 +31,7 @@ from schemas import (
     CreateGameRequest,
     CreatePrizeGameRequest,
     CreateRoomRequest,
+    ForfeitGameRequest,
     GameStateResponse,
     HumanMoveRequest,
     JoinRoomRequest,
@@ -41,6 +42,7 @@ from schemas import (
     UpdateSessionDifficultyRequest,
     UpdateSessionLiveConfigRequest,
     UpdateWinAPrizeConfigRequest,
+    UsernameCheckRequest,
 )
 
 ENV_PATH = Path(__file__).resolve().parent / ".env"
@@ -135,6 +137,15 @@ def health_check():
     return {"status": "ok"}
 
 
+@app.post("/api/username/check")
+def check_username(payload: UsernameCheckRequest):
+    cleaned = payload.username.strip()[:32]
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Veuillez saisir un pseudo valide.")
+    _assert_allowed_usernames(cleaned)
+    return {"allowed": True, "username": cleaned}
+
+
 # --- Standard Game Endpoints ---
 
 
@@ -188,6 +199,14 @@ def step_ai_move(session_id: str):
 def undo_move(session_id: str):
     session = sessions.get(session_id)
     session.undo()
+    with session.lock:
+        return session.to_response()
+
+
+@app.post("/api/games/{session_id}/forfeit", response_model=GameStateResponse)
+def forfeit_game(session_id: str, payload: ForfeitGameRequest = ForfeitGameRequest()):
+    session = sessions.get(session_id)
+    session.forfeit(reason=payload.reason)
     with session.lock:
         return session.to_response()
 
@@ -641,6 +660,12 @@ def admin_add_blacklist(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return entry
+
+
+@app.post("/api/admin/blacklist/seed-defaults")
+def admin_seed_default_blacklist(_token: str = Depends(require_admin)):
+    added = db.seed_default_blacklist()
+    return {"added": added, "entries": db.list_blacklist()}
 
 
 @app.delete("/api/admin/blacklist/{entry_id}", status_code=204)

@@ -7,6 +7,7 @@
     adminLogout,
     adminUpdateSessionDifficulty,
     adminUpdateSessionLiveConfig,
+    forfeitGame,
     getAdminStreamUrl,
     getAdminWsUrl,
   } from '../lib/api.js';
@@ -288,6 +289,30 @@
     } catch {
       // ignore
     }
+  }
+
+  async function handleForceEndSession(session) {
+    if (!token || session.status !== 'playing') return;
+    try {
+      const updated = await forfeitGame(session.session_id, 'manual_end');
+      sessionsMap = { ...sessionsMap, [updated.session_id]: updated };
+      showToast(`Partie de ${session.username} terminée et enregistrée dans l'historique.`);
+    } catch (err) {
+      showToast(err.message || 'Impossible de terminer cette partie.');
+    }
+  }
+
+  function formatStatusBadge(s) {
+    if (s.waiting_for_opponent) return 'Attente';
+    if (s.status === 'playing') return 'En direct';
+    if (s.status === 'win') return `Gagné : ${s.players?.[String(s.winner)]?.name}`;
+    if (s.status === 'draw') return 'Nul';
+    if (s.status === 'forfeit') {
+      if (s.end_reason === 'accidental_exit') return 'Forfait (Sortie)';
+      if (s.end_reason === 'abandon_restart') return 'Forfait (Abandon)';
+      return 'Fin manuelle';
+    }
+    return s.status;
   }
 
   async function handleLiveDifficultyChange(session, newLevel) {
@@ -617,15 +642,13 @@
                             ? 'bg-emerald-500/15 text-emerald-300'
                             : s.status === 'win'
                               ? 'bg-indigo-500/20 text-indigo-300'
-                              : 'bg-slate-800 text-slate-300'}"
+                              : s.status === 'forfeit'
+                                ? s.end_reason === 'manual_end'
+                                  ? 'bg-amber-500/20 text-amber-300'
+                                  : 'bg-rose-500/20 text-rose-300'
+                                : 'bg-slate-800 text-slate-300'}"
                         >
-                          {s.waiting_for_opponent
-                            ? 'Attente'
-                            : s.status === 'playing'
-                              ? 'En direct'
-                              : s.status === 'win'
-                                ? `Gagné : ${s.players?.[String(s.winner)]?.name}`
-                                : 'Nul'}
+                          {formatStatusBadge(s)}
                         </span>
                       </div>
                       <p class="mt-0.5 truncate text-[11px] text-slate-400">
@@ -727,6 +750,16 @@
                     ID {s.session_id.slice(0, 8)}
                   </span>
                   <div class="flex items-center gap-1.5">
+                    {#if s.status === 'playing'}
+                      <button
+                        type="button"
+                        onclick={() => handleForceEndSession(s)}
+                        class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-semibold text-amber-200 hover:bg-amber-500/20"
+                        title="Clôturer la partie et l'archiver dans SQLite"
+                      >
+                        Terminer
+                      </button>
+                    {/if}
                     <button
                       type="button"
                       onclick={() => openSpectate(s)}

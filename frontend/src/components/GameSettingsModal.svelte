@@ -1,7 +1,14 @@
 <script>
   import { LEVELS } from '../lib/levels.js';
 
-  let { open = false, config = null, onClose = () => {}, onApply = () => {} } = $props();
+  let {
+    open = false,
+    config = null,
+    error = null,
+    saving = false,
+    onClose = () => {},
+    onApply = () => {},
+  } = $props();
 
   let rows = $state(6);
   let cols = $state(7);
@@ -100,6 +107,14 @@
       </div>
 
       <form onsubmit={handleSubmit} class="space-y-5 p-5 text-sm">
+        {#if error}
+          <div
+            class="rounded-xl border border-rose-500/40 bg-rose-950/60 px-3.5 py-2.5 text-xs text-rose-200"
+          >
+            {error}
+          </div>
+        {/if}
+
         <!-- Mode -->
         <div>
           <span class="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -321,9 +336,10 @@
           </button>
           <button
             type="submit"
-            class="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500"
+            disabled={saving}
+            class="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Lancer la partie
+            {saving ? 'Vérification…' : 'Lancer la partie'}
           </button>
         </div>
       </form>

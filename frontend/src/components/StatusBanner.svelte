@@ -1,4 +1,5 @@
 <script>
+  import { onDestroy, onMount } from 'svelte';
   import { formatLevel, LEVEL_MAP } from '../lib/levels.js';
 
   let {
@@ -9,10 +10,38 @@
     onDismissError = () => {},
   } = $props();
 
+  let nowSec = $state(Date.now() / 1000);
+  let timerId = null;
+
+  onMount(() => {
+    timerId = setInterval(() => {
+      nowSec = Date.now() / 1000;
+    }, 1000);
+  });
+
+  onDestroy(() => {
+    if (timerId) clearInterval(timerId);
+  });
+
   let p1 = $derived(game?.players?.['1'] || null);
   let p2 = $derived(game?.players?.['2'] || null);
   let activePlayer = $derived(game?.players?.[String(game.current_player)] || null);
   let winnerPlayer = $derived(game?.winner ? game?.players?.[String(game.winner)] : null);
+
+  let elapsedFormatted = $derived.by(() => {
+    if (!game?.created_at) return '';
+    const endTs = game.status === 'playing' ? nowSec : game.updated_at || nowSec;
+    const secs = Math.max(0, Math.floor(endTs - game.created_at));
+    const mins = Math.floor(secs / 60);
+    const rem = secs % 60;
+    return `${String(mins).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+  });
+
+  function forfeitLabel(reason) {
+    if (reason === 'accidental_exit') return 'Forfait (Sortie involontaire)';
+    if (reason === 'abandon_restart') return 'Forfait (Abandon)';
+    return 'Partie terminée';
+  }
 </script>
 
 <div class="space-y-3">
@@ -95,6 +124,20 @@
           >
             Match nul !
           </div>
+        {:else if game.status === 'forfeit'}
+          <div
+            class="inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-sm font-semibold {game.end_reason ===
+            'manual_end'
+              ? 'border-amber-400/50 bg-amber-500/15 text-amber-200'
+              : 'border-rose-400/50 bg-rose-500/15 text-rose-200'}"
+          >
+            <span
+              class="h-2 w-2 rounded-full {game.end_reason === 'manual_end'
+                ? 'bg-amber-400'
+                : 'bg-rose-400'}"
+            ></span>
+            {forfeitLabel(game.end_reason)}
+          </div>
         {:else if isThinking}
           <div
             class="inline-flex items-center gap-2 rounded-full border border-indigo-400/40 bg-indigo-500/15 px-4 py-1.5 text-sm font-medium text-indigo-200"
@@ -120,6 +163,10 @@
         {#if game.config?.random_start && game.move_history?.length === 0}
           <span class="text-[11px] font-medium text-indigo-300">
             Tirage au sort : {activePlayer?.name} commence
+          </span>
+        {:else if elapsedFormatted && game.move_history?.length > 0}
+          <span class="font-mono text-[10px] text-slate-500">
+            ⏱ {elapsedFormatted} · {game.move_history.length} {game.move_history.length > 1 ? 'coups' : 'coup'}
           </span>
         {/if}
       </div>

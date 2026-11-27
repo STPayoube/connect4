@@ -65,6 +65,14 @@ export function getAdminWsUrl(token) {
 
 // --- Standard Games ---
 
+export function checkUsername(username, signal) {
+  return request('/username/check', {
+    method: 'POST',
+    body: JSON.stringify({ username }),
+    signal,
+  });
+}
+
 export function createGame(config, signal) {
   return request('/games', {
     method: 'POST',
@@ -106,6 +114,14 @@ export function stepAiMove(sessionId, signal) {
 export function undoMove(sessionId, signal) {
   return request(`/games/${encodeURIComponent(sessionId)}/undo`, {
     method: 'POST',
+    signal,
+  });
+}
+
+export function forfeitGame(sessionId, reason = 'manual_end', signal) {
+  return request(`/games/${encodeURIComponent(sessionId)}/forfeit`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
     signal,
   });
 }
@@ -286,6 +302,13 @@ export function adminAddBlacklist(token, pattern, matchType = 'exact', reason = 
 export function adminDeleteBlacklist(token, entryId) {
   return request(`/admin/blacklist/${encodeURIComponent(entryId)}`, {
     method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function adminSeedDefaultBlacklist(token) {
+  return request('/admin/blacklist/seed-defaults', {
+    method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   });
 }

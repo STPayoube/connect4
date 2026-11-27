@@ -117,6 +117,36 @@
     return 'Normal';
   }
 
+  function formatOutcomeLabel(rec) {
+    if (rec.status === 'draw') return 'Match nul';
+    if (rec.status === 'forfeit') {
+      if (rec.human_outcome === 'forfeit_exit' || rec.end_reason === 'accidental_exit') {
+        return 'Forfait (Sortie involontaire)';
+      }
+      if (rec.human_outcome === 'forfeit_abandon' || rec.end_reason === 'abandon_restart') {
+        return 'Forfait (Abandon / Relance)';
+      }
+      return 'Fin manuelle';
+    }
+    return `${rec.winner_name} a gagné`;
+  }
+
+  function outcomeColorClass(rec) {
+    if (rec.status === 'draw') return 'text-slate-400';
+    if (rec.status === 'forfeit') {
+      if (rec.human_outcome === 'forfeit_exit' || rec.end_reason === 'accidental_exit') {
+        return 'text-orange-300 font-semibold';
+      }
+      if (rec.human_outcome === 'forfeit_abandon' || rec.end_reason === 'abandon_restart') {
+        return 'text-rose-300 font-semibold';
+      }
+      return 'text-amber-300 font-semibold';
+    }
+    if (rec.human_outcome === 'win') return 'text-emerald-300 font-semibold';
+    if (rec.human_outcome === 'loss') return 'text-rose-300 font-semibold';
+    return 'text-indigo-300 font-semibold';
+  }
+
   $effect(() => {
     refreshTrigger;
     if (token) loadAll();
@@ -206,6 +236,27 @@
           </div>
         </div>
 
+        <div class="grid grid-cols-3 gap-2 text-center text-[11px]">
+          <div class="rounded-xl border border-rose-500/20 bg-rose-950/20 p-2">
+            <div class="text-rose-300/80">Abandons / Relances</div>
+            <div class="mt-0.5 font-mono text-sm font-bold text-rose-300">
+              {stats.winaprize.forfeit_abandon || 0}
+            </div>
+          </div>
+          <div class="rounded-xl border border-orange-500/20 bg-orange-950/20 p-2">
+            <div class="text-orange-300/80">Sorties involontaires</div>
+            <div class="mt-0.5 font-mono text-sm font-bold text-orange-300">
+              {stats.winaprize.forfeit_exit || 0}
+            </div>
+          </div>
+          <div class="rounded-xl border border-amber-500/20 bg-amber-950/20 p-2">
+            <div class="text-amber-300/80">Fins manuelles</div>
+            <div class="mt-0.5 font-mono text-sm font-bold text-amber-300">
+              {stats.winaprize.forfeit_manual || 0}
+            </div>
+          </div>
+        </div>
+
         {#if stats.winaprize.by_level.length > 0}
           <div class="space-y-1.5">
             <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -291,6 +342,27 @@
           </div>
         </div>
 
+        <div class="grid grid-cols-3 gap-2 text-center text-[11px]">
+          <div class="rounded-xl border border-rose-500/20 bg-rose-950/20 p-2">
+            <div class="text-rose-300/80">Abandons / Relances</div>
+            <div class="mt-0.5 font-mono text-sm font-bold text-rose-300">
+              {stats.normal.forfeit_abandon || 0}
+            </div>
+          </div>
+          <div class="rounded-xl border border-orange-500/20 bg-orange-950/20 p-2">
+            <div class="text-orange-300/80">Sorties involontaires</div>
+            <div class="mt-0.5 font-mono text-sm font-bold text-orange-300">
+              {stats.normal.forfeit_exit || 0}
+            </div>
+          </div>
+          <div class="rounded-xl border border-amber-500/20 bg-amber-950/20 p-2">
+            <div class="text-amber-300/80">Fins manuelles</div>
+            <div class="mt-0.5 font-mono text-sm font-bold text-amber-300">
+              {stats.normal.forfeit_manual || 0}
+            </div>
+          </div>
+        </div>
+
         {#if stats.normal.by_level.length > 0}
           <div class="space-y-1.5">
             <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -371,6 +443,10 @@
             <option value="win">Victoire humain</option>
             <option value="loss">Défaite humain</option>
             <option value="draw">Match nul</option>
+            <option value="forfeit_any">Tous les forfaits / fins</option>
+            <option value="forfeit_abandon">Forfait (Abandon / Relance)</option>
+            <option value="forfeit_exit">Forfait (Sortie involontaire)</option>
+            <option value="forfeit_manual">Fin manuelle</option>
           </select>
 
           <input
@@ -433,19 +509,9 @@
                     {/if}
                   </td>
                   <td class="py-2.5 pr-3">
-                    {#if rec.status === 'draw'}
-                      <span class="text-slate-400">Match nul</span>
-                    {:else}
-                      <span
-                        class="font-semibold {rec.human_outcome === 'win'
-                          ? 'text-emerald-300'
-                          : rec.human_outcome === 'loss'
-                            ? 'text-rose-300'
-                            : 'text-indigo-300'}"
-                      >
-                        {rec.winner_name} a gagné
-                      </span>
-                    {/if}
+                    <span class={outcomeColorClass(rec)}>
+                      {formatOutcomeLabel(rec)}
+                    </span>
                   </td>
                   <td class="py-2.5 pr-3 font-mono text-slate-400">{rec.total_plies}</td>
                   <td class="py-2.5 pr-3 text-[11px] text-slate-400">{formatDate(rec.finished_at)}</td>
@@ -492,7 +558,7 @@
           </h3>
           <p class="text-xs text-slate-400">
             {channelLabel(replayRecord.channel)} · {replayRecord.rows}×{replayRecord.cols} ·
-            {replayRecord.status === 'draw' ? 'Match nul' : `Vainqueur : ${replayRecord.winner_name}`}
+            {formatOutcomeLabel(replayRecord)}
           </p>
         </div>
         <button

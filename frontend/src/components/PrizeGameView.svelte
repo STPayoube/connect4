@@ -1,7 +1,10 @@
 <script>
   import { onDestroy, onMount } from 'svelte';
   import {
+    checkUsername,
     createWinAPrizeGame,
+    forfeitGame,
+    getGame,
     getGameWsUrl,
     getWinAPrizeConfig,
     playHumanMove,
@@ -12,6 +15,8 @@
   import Board from './Board.svelte';
   import StatusBanner from './StatusBanner.svelte';
   import MoveHistory from './MoveHistory.svelte';
+
+  const PRIZE_SESSION_KEY = 'connect4_active_prize_session';
 
   let { username = '', onSaveUsername = () => {}, onGoHome = () => {} } = $props();
 
@@ -24,6 +29,14 @@
 
   let nameInput = $state('');
   let nameError = $state(null);
+  let savingName = $state(false);
+
+  let resumePromptGame = $state(null);
+  let resumeBusy = $state(false);
+  let confirmAction = $state(null); // { title, description, confirmLabel, onConfirm }
+  let confirmBusy = $state(false);
+  let endGameConfirmOpen = $state(false);
+  let endingGame = $state(false);
 
   let activeController = null;
   let openingTimer = null;
@@ -33,6 +46,9 @@
   let canInteract = $derived(
     Boolean(
       game &&
+        !resumePromptGame &&
+        !confirmAction &&
+        !endGameConfirmOpen &&
         game.status === 'playing' &&
         !isThinking &&
         !isLoading &&
@@ -43,6 +59,29 @@
   let humanWon = $derived(
     Boolean(game && game.status === 'win' && game.winner === game.config?.human_player)
   );
+
+  let isGameInProgress = $derived(
+    Boolean(game && game.status === 'playing' && (game.move_history?.length || 0) > 0)
+  );
+
+  $effect(() => {
+    if (typeof window === 'undefined' || !game) return;
+    if (game.status === 'playing' && (game.move_history?.length || 0) > 0) {
+      localStorage.setItem(PRIZE_SESSION_KEY, game.session_id);
+    } else {
+      const stored = localStorage.getItem(PRIZE_SESSION_KEY);
+      if (!stored || stored === game.session_id) {
+        localStorage.removeItem(PRIZE_SESSION_KEY);
+      }
+    }
+  });
+
+  function handleBeforeUnload(event) {
+    if (isGameInProgress) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  }
 
   function closeSocket() {
     if (wsReconnectTimer) {
@@ -266,18 +305,131 @@
     }
   }
 
-  function handleNameSubmit(event) {
+  async function handleNameSubmit(event) {
     event.preventDefault();
+    if (savingName) return;
     const cleaned = nameInput.trim().slice(0, 32);
     if (!cleaned) return;
-    onSaveUsername(cleaned);
-    startPrizeGame(cleaned);
+    savingName = true;
+    nameError = null;
+    try {
+      await checkUsername(cleaned);
+      onSaveUsername(cleaned);
+      await startPrizeGame(cleaned);
+    } catch (err) {
+      nameError = err.message || "Ce pseudo n'est pas autorisé. Veuillez en choisir un autre.";
+    } finally {
+      savingName = false;
+    }
+  }
+
+  function requestWithAbandonConfirm(title, description, confirmLabel, actionFn) {
+    if (isGameInProgress) {
+      confirmAction = { title, description, confirmLabel, onConfirm: actionFn };
+      return;
+    }
+    actionFn();
+  }
+
+  async function handleConfirmAbandon() {
+    if (!confirmAction || confirmBusy) return;
+    confirmBusy = true;
+    const { onConfirm } = confirmAction;
+    const oldId = game?.session_id;
+    try {
+      if (oldId) {
+        await forfeitGame(oldId, 'abandon_restart');
+      }
+    } catch {
+      // ignore
+    } finally {
+      localStorage.removeItem(PRIZE_SESSION_KEY);
+      confirmAction = null;
+      confirmBusy = false;
+    }
+    await onConfirm();
+  }
+
+  async function handleConfirmEndGame() {
+    if (!game || endingGame) return;
+    endingGame = true;
+    cancelPending();
+    error = null;
+    try {
+      const ended = await forfeitGame(game.session_id, 'manual_end');
+      game = ended;
+      localStorage.removeItem(PRIZE_SESSION_KEY);
+      endGameConfirmOpen = false;
+    } catch (err) {
+      error = err.message || 'Impossible de terminer la partie.';
+      endGameConfirmOpen = false;
+    } finally {
+      endingGame = false;
+    }
+  }
+
+  function handleResumeConfirm() {
+    if (!resumePromptGame) return;
+    const resumed = resumePromptGame;
+    resumePromptGame = null;
+    game = resumed;
+    connectGameSocket(resumed.session_id);
+    if (
+      resumed.status === 'playing' &&
+      resumed.players?.[String(resumed.current_player)]?.type === 'ai'
+    ) {
+      triggerAiReply();
+    }
+  }
+
+  async function handleResumeDecline() {
+    if (!resumePromptGame || resumeBusy) return;
+    resumeBusy = true;
+    const oldId = resumePromptGame.session_id;
+    try {
+      await forfeitGame(oldId, 'accidental_exit');
+    } catch {
+      // ignore
+    } finally {
+      localStorage.removeItem(PRIZE_SESSION_KEY);
+      resumePromptGame = null;
+      resumeBusy = false;
+    }
+    if (username && (!prizeConfig || prizeConfig.enabled)) {
+      await startPrizeGame(username);
+    }
   }
 
   onMount(async () => {
+    window.addEventListener('beforeunload', handleBeforeUnload);
     nameInput = username || '';
     await loadConfig();
-    if (username && (!prizeConfig || prizeConfig.enabled)) {
+    if (prizeConfig && !prizeConfig.enabled) {
+      isLoading = false;
+      return;
+    }
+
+    const savedSid = (localStorage.getItem(PRIZE_SESSION_KEY) || '').trim();
+    if (savedSid) {
+      try {
+        const existing = await getGame(savedSid);
+        if (
+          existing &&
+          existing.channel === 'winaprize' &&
+          existing.status === 'playing' &&
+          (existing.move_history?.length || 0) > 0
+        ) {
+          resumePromptGame = existing;
+          isLoading = false;
+          return;
+        }
+      } catch {
+        // Expirée
+      }
+      localStorage.removeItem(PRIZE_SESSION_KEY);
+    }
+
+    if (username) {
       await startPrizeGame(username);
     } else {
       isLoading = false;
@@ -285,6 +437,9 @@
   });
 
   onDestroy(() => {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    }
     cancelPending();
     closeSocket();
   });
@@ -378,15 +533,17 @@
             type="text"
             required
             maxlength="32"
+            disabled={savingName}
             bind:value={nameInput}
             placeholder="Votre pseudo"
-            class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+            class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none disabled:opacity-60"
           />
           <button
             type="submit"
-            class="w-full rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-500"
+            disabled={savingName}
+            class="w-full rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Lancer le défi
+            {savingName ? 'Vérification…' : 'Lancer le défi'}
           </button>
         </form>
       </div>
@@ -442,12 +599,29 @@
           <div class="flex flex-col gap-2 rounded-2xl border border-slate-800 bg-slate-900/70 p-3.5">
             <button
               type="button"
-              onclick={() => startPrizeGame(game?.username || nameInput || username)}
+              onclick={() =>
+                requestWithAbandonConfirm(
+                  'Relancer le défi ?',
+                  'Une partie de défi est déjà entamée. Rejouer maintenant enregistrera la partie en cours comme un forfait (abandon).',
+                  'Abandonner et rejouer',
+                  () => startPrizeGame(game?.username || nameInput || username)
+                )}
               disabled={isLoading || isThinking}
               class="w-full rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow transition hover:bg-indigo-500 disabled:opacity-50"
             >
               Rejouer
             </button>
+
+            {#if isGameInProgress}
+              <button
+                type="button"
+                onclick={() => (endGameConfirmOpen = true)}
+                disabled={isThinking}
+                class="w-full rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-40"
+              >
+                Fin de partie (Enregistrer)
+              </button>
+            {/if}
 
             {#if game?.allow_undo}
               <button
@@ -462,12 +636,18 @@
 
             <button
               type="button"
-              onclick={() => {
-                cancelPending();
-                closeSocket();
-                game = null;
-                nameInput = username || '';
-              }}
+              onclick={() =>
+                requestWithAbandonConfirm(
+                  'Changer de pseudo ?',
+                  'Une partie est déjà entamée. Changer de pseudo enregistrera cette partie comme un forfait (abandon).',
+                  'Abandonner et changer',
+                  () => {
+                    cancelPending();
+                    closeSocket();
+                    game = null;
+                    nameInput = username || '';
+                  }
+                )}
               class="w-full rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200"
             >
               Changer de pseudo
@@ -479,4 +659,106 @@
       </main>
     {/if}
   </div>
+
+  {#if resumePromptGame}
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div class="w-full max-w-md rounded-2xl border border-indigo-500/40 bg-slate-900 p-6 shadow-2xl">
+        <h2 class="text-base font-bold text-white">Défi interrompu détecté</h2>
+        <p class="mt-2 text-xs leading-relaxed text-slate-300">
+          Vous avez quitté un défi en cours ({resumePromptGame.move_history.length} coups joués).
+          Voulez-vous reprendre la partie ? Si vous cliquez sur <strong class="text-rose-300">Non</strong>,
+          elle sera enregistrée comme <strong class="text-rose-300">Forfait (Sortie involontaire)</strong>.
+        </p>
+        <div class="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            disabled={resumeBusy}
+            onclick={handleResumeDecline}
+            class="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-50"
+          >
+            {resumeBusy ? 'Enregistrement…' : 'Non (Forfait)'}
+          </button>
+          <button
+            type="button"
+            disabled={resumeBusy}
+            onclick={handleResumeConfirm}
+            class="rounded-xl bg-indigo-600 px-5 py-2 text-xs font-semibold text-white shadow hover:bg-indigo-500 disabled:opacity-50"
+          >
+            Oui, reprendre
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if confirmAction}
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
+      role="alertdialog"
+      aria-modal="true"
+    >
+      <div class="w-full max-w-md rounded-2xl border border-amber-500/45 bg-slate-900 p-6 shadow-2xl">
+        <h2 class="text-base font-bold text-amber-200">{confirmAction.title}</h2>
+        <p class="mt-3 rounded-xl border border-amber-500/25 bg-amber-950/30 p-3 text-xs leading-relaxed text-amber-100">
+          {confirmAction.description}
+        </p>
+        <div class="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            disabled={confirmBusy}
+            onclick={() => (confirmAction = null)}
+            class="rounded-xl border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+          >
+            Continuer la partie
+          </button>
+          <button
+            type="button"
+            disabled={confirmBusy}
+            onclick={handleConfirmAbandon}
+            class="rounded-xl bg-rose-600 px-4 py-2 text-xs font-semibold text-white shadow hover:bg-rose-500 disabled:opacity-50"
+          >
+            {confirmBusy ? 'Enregistrement…' : confirmAction.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if endGameConfirmOpen}
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
+      role="alertdialog"
+      aria-modal="true"
+    >
+      <div class="w-full max-w-md rounded-2xl border border-amber-500/40 bg-slate-900 p-6 shadow-2xl">
+        <h2 class="text-base font-bold text-white">Terminer et enregistrer le défi ?</h2>
+        <p class="mt-2 text-xs leading-relaxed text-slate-300">
+          Cette partie ({game?.move_history?.length || 0} coups) sera clôturée et sauvegardée dans
+          l'historique en tant que <strong class="text-amber-300">Fin manuelle</strong>.
+        </p>
+        <div class="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            disabled={endingGame}
+            onclick={() => (endGameConfirmOpen = false)}
+            class="rounded-xl border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+          >
+            Annuler
+          </button>
+          <button
+            type="button"
+            disabled={endingGame}
+            onclick={handleConfirmEndGame}
+            class="rounded-xl bg-amber-600 px-4 py-2 text-xs font-semibold text-white shadow hover:bg-amber-500 disabled:opacity-50"
+          >
+            {endingGame ? 'Enregistrement…' : 'Confirmer'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
