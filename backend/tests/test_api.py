@@ -502,3 +502,93 @@ def test_forfeit_reasons_and_distinct_stats():
     assert any(r["username"] == "ForfeitUser3" for r in h_exit["records"])
 
 
+def test_winaprize_preserves_impossible_difficulty_after_username_change():
+    """
+    Ensure /winaprize keeps 'impossible' difficulty across consecutive games even after
+    the player changes their username and starts a new challenge game.
+    """
+    headers = _admin_headers()
+
+    upd = client.put(
+        "/api/admin/winaprize/config",
+        headers=headers,
+        json={
+            "enabled": True,
+            "rows": 6,
+            "cols": 7,
+            "align": 4,
+            "ai_level": "impossible",
+            "starting_player": 1,
+            "human_player": 1,
+            "random_start": False,
+            "allow_undo": False,
+            "title": "Défi Impossible",
+            "subtitle": "Test",
+            "apply_to_live_games": True,
+        },
+    )
+    assert upd.status_code == 200
+
+    # Game 1 with username A
+    g1 = client.post("/api/winaprize/games", json={"username": "ChallengerA"}).json()
+    client.post(f"/api/games/{g1['session_id']}/move", json={"col": 3})
+    client.post(f"/api/games/{g1['session_id']}/forfeit", json={"reason": "manual_end"})
+
+    # Game 2 after changing username to ChallengerB -> must STILL be 'impossible' & minimax!
+    g2 = client.post("/api/winaprize/games", json={"username": "ChallengerB"}).json()
+    sid2 = g2["session_id"]
+
+    # Play the 4-move bottom-row trap sequence (cols 3, 2, 1, 0) -> AI must block and never lose
+    for col in (3, 2, 1, 0):
+        resp = client.post(f"/api/games/{sid2}/move", json={"col": col})
+        if resp.status_code == 200:
+            st = resp.json()
+            assert st["winner"] != 1, "Impossible /winaprize AI lost in 4 moves after username change!"
+            if st["status"] != "playing":
+                break
+
+    admin_sessions = client.get("/api/admin/sessions", headers=headers).json()["sessions"]
+    s2_admin = next(s for s in admin_sessions if s["session_id"] == sid2)
+    assert s2_admin["config"]["ai_level"] == "impossible"
+    assert s2_admin["ai_info"]["strategy"] == "minimax"
+    assert s2_admin["ai_info"]["level"] == "impossible"
+
+
+def test_cannot_change_username_mid_game_only_at_start_or_end():
+    """Username can be changed at start (0 moves) or after game end, never mid-game."""
+    g = client.post(
+        "/api/games",
+        json={"username": "PlayerStart", "mode": "human_vs_ai", "ai_level": "easy"},
+    ).json()
+    sid = g["session_id"]
+
+    # 1. Start of game (0 moves): changing username is allowed
+    r_start = client.post(f"/api/games/{sid}/reset", json={"username": "PlayerRenamed"})
+    assert r_start.status_code == 200
+    assert r_start.json()["username"] == "PlayerRenamed"
+
+    # 2. Play 1 move -> game is now in progress
+    mv = client.post(f"/api/games/{sid}/move", json={"col": 3})
+    assert mv.status_code == 200
+    assert len(mv.json()["move_history"]) >= 1
+
+    # Mid-game username change MUST be rejected with 409
+    r_mid = client.post(f"/api/games/{sid}/reset", json={"username": "SneakyMidGame"})
+    assert r_mid.status_code == 409
+
+    # Keeping the same username on reset still works
+    r_same = client.post(
+        f"/api/games/{sid}/reset", json={"username": "PlayerRenamed", "ai_level": "medium"}
+    )
+    assert r_same.status_code == 200
+
+    # 3. Play 1 move then end the game -> changing username after end MUST succeed
+    client.post(f"/api/games/{sid}/move", json={"col": 3})
+    client.post(f"/api/games/{sid}/forfeit", json={"reason": "manual_end"})
+
+    r_end = client.post(f"/api/games/{sid}/reset", json={"username": "PlayerAfterEnd"})
+    assert r_end.status_code == 200
+    assert r_end.json()["username"] == "PlayerAfterEnd"
+
+
+

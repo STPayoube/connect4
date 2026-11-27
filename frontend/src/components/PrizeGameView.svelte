@@ -634,24 +634,20 @@
               </button>
             {/if}
 
-            <button
-              type="button"
-              onclick={() =>
-                requestWithAbandonConfirm(
-                  'Changer de pseudo ?',
-                  'Une partie est déjà entamée. Changer de pseudo enregistrera cette partie comme un forfait (abandon).',
-                  'Abandonner et changer',
-                  () => {
-                    cancelPending();
-                    closeSocket();
-                    game = null;
-                    nameInput = username || '';
-                  }
-                )}
-              class="w-full rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200"
-            >
-              Changer de pseudo
-            </button>
+            {#if !isGameInProgress}
+              <button
+                type="button"
+                onclick={() => {
+                  cancelPending();
+                  closeSocket();
+                  game = null;
+                  nameInput = username || '';
+                }}
+                class="w-full rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200"
+              >
+                Changer de pseudo
+              </button>
+            {/if}
           </div>
 
           <MoveHistory moves={game?.move_history || []} />

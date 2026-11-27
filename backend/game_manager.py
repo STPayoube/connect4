@@ -868,6 +868,19 @@ class SessionManager:
         if existing.channel == "online_pvp":
             raise GameError("Utilisez /api/rooms/{code}/rematch pour les salons en ligne.", status_code=400)
 
+        requested_user = overrides.get("username")
+        if (
+            requested_user is not None
+            and requested_user.strip()
+            and requested_user.strip() != existing.config.username
+            and existing.status == "playing"
+            and len(existing.move_history) > 0
+        ):
+            raise GameError(
+                "Impossible de changer de pseudo pendant une partie en cours. Terminez la partie d'abord.",
+                status_code=409,
+            )
+
         merged = existing.config.model_dump()
 
         if overrides.get("ai_level") is not None and overrides.get("ai_depth") is None:

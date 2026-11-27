@@ -129,3 +129,51 @@ def test_tree_minimax_and_top_row_bounds_safety():
     for coord_str in moves:
         r, c = map(int, coord_str.split(":"))
         assert c4.is_playable_cell(r, c)
+
+
+def test_alphabeta_root_never_includes_fail_low_blunders_in_best_moves():
+    """
+    Regression test for the fail-hard Alpha-Beta root tie bug:
+    After Red plays col 3, AI plays col 3, Red plays col 2 -> AI MUST block the open-two
+    (col 1 or col 4) and MUST NEVER include pruned losing columns (col 5 or col 6) in best_moves.
+    """
+    c4 = make_game()
+    c4.drop_token(3, 1)
+    c4.drop_token(3, 2)
+    c4.drop_token(2, 1)
+
+    ai = AI("Impossible AI", 2, "O", level="impossible")
+    res = ai.choose_move(c4)
+    best_cols = {m[1] for m in res["ai_info"]["tree_info"]["best_moves"]}
+    assert 5 not in best_cols
+    assert 6 not in best_cols
+    assert res["col"] in (1, 4)
+
+
+def test_impossible_and_hard_never_lose_in_4_moves_bottom_row_traps():
+    """
+    Verify neither Hard nor Impossible can be beaten in 4 moves along the bottom row
+    for common open-three fork setups (including 4-3-2-1, 4-2-3-1, 2-4-3-1, 3-4-2-1).
+    """
+    traps = [
+        (3, 2, 1, 0),
+        (3, 1, 2, 0),
+        (1, 3, 2, 0),
+        (2, 3, 1, 0),
+        (2, 3, 4, 5),
+        (3, 4, 2, 1),
+    ]
+    for level in ("hard", "impossible"):
+        ai = AI("AI", 2, "O", level=level)
+        for seq in traps:
+            c4 = make_game()
+            for col in seq:
+                if c4.get_drop_row(col) != 5:
+                    break  # AI already blocked the bottom row square!
+                c4.drop_token(col, 1)
+                winner, _ = c4.check_win()
+                assert winner != 1, f"{level} AI lost in 4 moves to sequence {seq}!"
+                ai.choose_move(c4)
+                if c4.check_win()[0] is not None:
+                    break
+

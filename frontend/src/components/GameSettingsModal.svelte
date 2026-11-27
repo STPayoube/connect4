@@ -6,6 +6,7 @@
     config = null,
     error = null,
     saving = false,
+    lockUsername = false,
     onClose = () => {},
     onApply = () => {},
   } = $props();
@@ -150,10 +151,16 @@
               id="username-input"
               type="text"
               maxlength="32"
+              disabled={lockUsername}
               bind:value={username}
               placeholder="Entrez votre pseudo"
-              class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+              class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-55"
             />
+            {#if lockUsername}
+              <p class="mt-1 text-[11px] text-slate-500">
+                Le pseudo ne peut être modifié qu'au début ou en fin de partie.
+              </p>
+            {/if}
           </div>
 
           {#if mode === 'player_vs_player'}

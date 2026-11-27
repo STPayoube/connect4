@@ -139,6 +139,10 @@
     return Boolean(game && game.status === 'playing' && (game.move_history?.length || 0) > 0);
   }
 
+  let canChangeUsername = $derived(
+    !game || game.status !== 'playing' || (game.move_history?.length || 0) === 0
+  );
+
   function handleBeforeUnload(event) {
     if (activeView === 'normal' && isGameInProgress()) {
       event.preventDefault();
@@ -690,21 +694,25 @@
     savingSettings = true;
     settingsError = null;
     try {
-      const cleanUser = (newConfig.username || '').trim().slice(0, 32);
-      if (!cleanUser) {
+      const effectiveUser = canChangeUsername
+        ? (newConfig.username || '').trim().slice(0, 32)
+        : username || 'Invité';
+      if (!effectiveUser) {
         settingsError = 'Veuillez saisir un pseudo valide.';
         return;
       }
-      await checkUsername(cleanUser);
+      await checkUsername(effectiveUser);
       if (newConfig.mode === 'player_vs_player' && newConfig.player2_name) {
         await checkUsername(newConfig.player2_name.trim().slice(0, 32));
       }
-      persistUsername(cleanUser);
+      if (canChangeUsername) {
+        persistUsername(effectiveUser);
+      }
       settingsOpen = false;
       requestRestartWithConfirm(
         'Appliquer les nouveaux paramètres ?',
         'Une partie est déjà entamée. Lancer une nouvelle partie avec ces paramètres enregistrera la partie actuelle comme un forfait (abandon).',
-        { ...newConfig, username: cleanUser }
+        { ...newConfig, username: effectiveUser }
       );
     } catch (err) {
       settingsError = err.message || "Ce pseudo n'est pas autorisé.";
@@ -724,6 +732,10 @@
     if (savingUsername) return;
     const cleaned = usernameDraft.trim().slice(0, 32);
     if (!cleaned) return;
+    if (!canChangeUsername && cleaned !== username) {
+      usernameError = 'Impossible de changer de pseudo pendant une partie en cours.';
+      return;
+    }
 
     savingUsername = true;
     usernameError = null;
@@ -735,11 +747,7 @@
       if (!game && !resumePromptGame) {
         checkSavedSessionOrStart(cleaned);
       } else if (changed && game) {
-        requestRestartWithConfirm(
-          'Changer de pseudo ?',
-          'Une partie est déjà entamée. Pour appliquer votre nouveau pseudo immédiatement, la partie en cours sera enregistrée comme forfait (abandon).',
-          { username: cleaned }
-        );
+        handleNewGame({ username: cleaned });
       }
     } catch (err) {
       usernameError = err.message || "Ce pseudo n'est pas autorisé. Veuillez en choisir un autre.";
@@ -845,20 +853,30 @@
           </button>
 
           {#if username}
-            <button
-              type="button"
-              onclick={() => {
-                usernameDraft = username;
-                usernameError = null;
-                showUsernameModal = true;
-              }}
-              class="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-900/90 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-indigo-400/50 hover:text-white"
-              title="Modifier le pseudo"
-            >
-              <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-              <span>{username}</span>
-              <span class="text-[10px] text-slate-500">Modifier</span>
-            </button>
+            {#if canChangeUsername}
+              <button
+                type="button"
+                onclick={() => {
+                  usernameDraft = username;
+                  usernameError = null;
+                  showUsernameModal = true;
+                }}
+                class="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-900/90 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-indigo-400/50 hover:text-white"
+                title="Modifier le pseudo"
+              >
+                <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
+                <span>{username}</span>
+                <span class="text-[10px] text-slate-500">Modifier</span>
+              </button>
+            {:else}
+              <span
+                class="inline-flex items-center gap-2 rounded-full border border-slate-800 bg-slate-900/70 px-3 py-1.5 text-xs font-medium text-slate-300"
+                title="Impossible de changer de pseudo pendant une partie en cours"
+              >
+                <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
+                <span>{username}</span>
+              </span>
+            {/if}
           {/if}
         </div>
       </header>
@@ -1134,6 +1152,7 @@
     config={settingsConfig}
     error={settingsError}
     saving={savingSettings}
+    lockUsername={!canChangeUsername}
     onClose={() => {
       settingsError = null;
       settingsOpen = false;

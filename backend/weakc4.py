@@ -847,6 +847,7 @@ class AI(Player):
         best_moves = []
         alpha = -float("inf")
         beta = float("inf")
+        eps = 1e-4
 
         for col in ordered_cols:
             r = c4.get_drop_row(col)
@@ -855,13 +856,14 @@ class AI(Player):
             c4.grid[r][col] = 0
 
             child_scores.append({"row": r, "col": col, "score": round(float(score), 1)})
-            if score > best_score:
+            if score > best_score + eps:
                 best_score = score
                 best_moves = [[r, col]]
-            elif score == best_score:
+                # Keep alpha strictly below best_score so fail-low pruned blunders
+                # can never tie with best_score and sneak into best_moves.
+                alpha = best_score - eps
+            elif abs(score - best_score) <= eps:
                 best_moves.append([r, col])
-            if best_score > alpha:
-                alpha = best_score
 
         chosen_row, chosen_col = random.choice(best_moves)
         c4.grid[chosen_row][chosen_col] = ai_val
