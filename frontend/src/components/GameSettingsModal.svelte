@@ -145,7 +145,7 @@
         <div class="grid grid-cols-1 gap-3 {mode === 'player_vs_player' ? 'sm:grid-cols-2' : ''}">
           <div>
             <label for="username-input" class="mb-1.5 block text-xs font-medium text-slate-300">
-              {mode === 'player_vs_player' ? 'Pseudo Joueur 1 (Rouge)' : 'Votre pseudo'}
+              {mode === 'player_vs_player' ? 'Pseudo Joueur 1' : 'Votre pseudo'}
             </label>
             <input
               id="username-input"
@@ -166,7 +166,7 @@
           {#if mode === 'player_vs_player'}
             <div>
               <label for="p2-input" class="mb-1.5 block text-xs font-medium text-slate-300">
-                Pseudo Joueur 2 (Or)
+                Pseudo Joueur 2
               </label>
               <input
                 id="p2-input"
@@ -185,7 +185,7 @@
           <div class="space-y-3">
             <div>
               <span class="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                {mode === 'ai_vs_ai' ? 'Niveau IA 1 (Rouge Corail)' : "Niveau de difficulté de l'IA"}
+                {mode === 'ai_vs_ai' ? 'Niveau IA 1' : "Niveau de difficulté de l'IA"}
               </span>
               <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {#each LEVELS as lvl}
@@ -206,7 +206,7 @@
             {#if mode === 'ai_vs_ai'}
               <div>
                 <span class="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Niveau IA 2 (Or Ambré)
+                  Niveau IA 2
                 </span>
                 <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {#each LEVELS as lvl}
@@ -239,8 +239,8 @@
                 bind:value={humanPlayer}
                 class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
               >
-                <option value={1}>Joueur 1 (Rouge Corail)</option>
-                <option value={2}>Joueur 2 (Or Ambré)</option>
+                <option value={1}>Joueur 1</option>
+                <option value={2}>Joueur 2</option>
               </select>
             </div>
           {/if}
@@ -254,8 +254,8 @@
               bind:value={startingPlayer}
               class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
             >
-              <option value="1">Joueur 1 (Rouge Corail)</option>
-              <option value="2">Joueur 2 (Or Ambré)</option>
+              <option value="1">Joueur 1</option>
+              <option value="2">Joueur 2</option>
               <option value="random">Aléatoire (Tirage au sort)</option>
             </select>
           </div>

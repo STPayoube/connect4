@@ -983,7 +983,7 @@
             maxlength="32"
             disabled={savingUsername}
             bind:value={usernameDraft}
-            placeholder="ex. Ayoube"
+            placeholder="Votre pseudo"
             class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none disabled:opacity-60"
           />
 

@@ -252,8 +252,8 @@
             bind:value={humanPlayer}
             class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100"
           >
-            <option value={1}>Joueur 1 (Rouge Corail)</option>
-            <option value={2}>Joueur 2 (Or Ambré)</option>
+            <option value={1}>Joueur 1</option>
+            <option value={2}>Joueur 2</option>
           </select>
         </div>
 

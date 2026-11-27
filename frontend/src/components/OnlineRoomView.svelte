@@ -388,9 +388,9 @@
           </h1>
           <p class="text-xs text-slate-400">
             {#if seat === 1}
-              Vous êtes Joueur 1 (Rouge Corail)
+              Vous êtes Joueur 1
             {:else if seat === 2}
-              Vous êtes Joueur 2 (Or Ambré)
+              Vous êtes Joueur 2
             {:else if game}
               Mode Spectateur en direct
             {:else}

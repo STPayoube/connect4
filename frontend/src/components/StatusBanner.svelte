@@ -102,7 +102,6 @@
               </span>
             {/if}
           </div>
-          <p class="text-[11px] text-slate-400">Rouge Corail</p>
         </div>
         {#if game.status === 'playing' && game.current_player === 1}
           <span class="h-2.5 w-2.5 animate-pulse rounded-full bg-rose-400"></span>
@@ -210,7 +209,6 @@
               </span>
             {/if}
           </div>
-          <p class="text-[11px] text-slate-400">Or Ambré</p>
         </div>
         {#if game.status === 'playing' && game.current_player === 2}
           <span class="h-2.5 w-2.5 animate-pulse rounded-full bg-amber-400"></span>
