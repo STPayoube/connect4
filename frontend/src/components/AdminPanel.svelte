@@ -5,12 +5,16 @@
     adminListSessions,
     adminLogin,
     adminLogout,
+    adminUpdateSessionDifficulty,
     getAdminStreamUrl,
   } from '../lib/api.js';
-  import { formatLevel, LEVEL_MAP } from '../lib/levels.js';
+  import { formatLevel, LEVEL_MAP, LEVELS } from '../lib/levels.js';
   import Board from './Board.svelte';
   import MoveHistory from './MoveHistory.svelte';
   import AiInspector from './AiInspector.svelte';
+  import AdminStatsTab from './AdminStatsTab.svelte';
+  import AdminPrizeTab from './AdminPrizeTab.svelte';
+  import AdminBlacklistTab from './AdminBlacklistTab.svelte';
 
   let { onBackToGame = () => {} } = $props();
 
@@ -21,12 +25,17 @@
   let loginError = $state(null);
   let loggingIn = $state(false);
 
+  let activeTab = $state('live'); // live | stats | prize | blacklist
+  let statsRefreshTick = $state(0);
+
   let sessionsMap = $state({});
-  let streamStatus = $state('disconnected'); // disconnected | connecting | connected | error
-  let filterStatus = $state('all'); // all | playing | finished
+  let streamStatus = $state('disconnected');
+  let filterStatus = $state('all');
+  let channelFilter = $state('all');
   let searchQuery = $state('');
   let spectateId = $state(null);
   let nowMs = $state(Date.now());
+  let adminToast = $state(null);
 
   let eventSource = null;
   let reconnectTimer = null;
@@ -37,12 +46,20 @@
       .filter((s) => {
         if (filterStatus === 'playing' && s.status !== 'playing') return false;
         if (filterStatus === 'finished' && s.status === 'playing') return false;
+        if (channelFilter !== 'all' && (s.channel || 'normal') !== channelFilter) return false;
         if (searchQuery.trim()) {
           const q = searchQuery.trim().toLowerCase();
           const p1 = s.players?.['1']?.name?.toLowerCase() || '';
           const p2 = s.players?.['2']?.name?.toLowerCase() || '';
           const user = (s.username || '').toLowerCase();
-          return user.includes(q) || p1.includes(q) || p2.includes(q) || s.session_id.includes(q);
+          const rc = (s.room_code || '').toLowerCase();
+          return (
+            user.includes(q) ||
+            p1.includes(q) ||
+            p2.includes(q) ||
+            rc.includes(q) ||
+            s.session_id.includes(q)
+          );
         }
         return true;
       })
@@ -52,11 +69,22 @@
   let stats = $derived({
     total: Object.keys(sessionsMap).length,
     playing: Object.values(sessionsMap).filter((s) => s.status === 'playing').length,
-    finished: Object.values(sessionsMap).filter((s) => s.status !== 'playing').length,
-    pvp: Object.values(sessionsMap).filter((s) => s.config?.mode === 'player_vs_player').length,
+    prizeLive: Object.values(sessionsMap).filter(
+      (s) => s.channel === 'winaprize' && s.status === 'playing'
+    ).length,
+    onlineLive: Object.values(sessionsMap).filter(
+      (s) => s.channel === 'online_pvp' && s.status === 'playing'
+    ).length,
   });
 
   let spectatedSession = $derived(spectateId ? sessionsMap[spectateId] || null : null);
+
+  function showToast(msg) {
+    adminToast = msg;
+    setTimeout(() => {
+      if (adminToast === msg) adminToast = null;
+    }, 3000);
+  }
 
   function closeStream() {
     if (reconnectTimer) {
@@ -88,7 +116,7 @@
         sessionsMap = next;
         streamStatus = 'connected';
       } catch {
-        // ignore parse error
+        // ignore
       }
     });
 
@@ -114,6 +142,10 @@
       }
     });
 
+    es.addEventListener('stats_update', () => {
+      statsRefreshTick += 1;
+    });
+
     es.onopen = () => {
       streamStatus = 'connected';
     };
@@ -123,7 +155,6 @@
       es.close();
       eventSource = null;
 
-      // Verify token is still valid; if 401, sign out cleanly
       try {
         await adminListSessions(activeToken);
         reconnectTimer = setTimeout(() => connectStream(activeToken), 2500);
@@ -176,7 +207,18 @@
     try {
       await adminDeleteSession(token, sessionId);
     } catch {
-      // handled by stream/error
+      // ignore
+    }
+  }
+
+  async function handleLiveDifficultyChange(session, newLevel) {
+    if (!token || session.config.mode === 'player_vs_player') return;
+    try {
+      const updated = await adminUpdateSessionDifficulty(token, session.session_id, newLevel);
+      sessionsMap = { ...sessionsMap, [updated.session_id]: updated };
+      showToast(`Switched ${session.username}'s AI to ${formatLevel(newLevel)} live!`);
+    } catch (err) {
+      showToast(err.message || 'Failed to switch difficulty.');
     }
   }
 
@@ -243,8 +285,10 @@
           </svg>
         </div>
         <div>
-          <h1 class="text-lg font-bold text-white sm:text-xl">Admin Live Control Panel</h1>
-          <p class="text-xs text-slate-400">Real-time multi-user Connect 4 gameplay monitor</p>
+          <h1 class="text-lg font-bold text-white sm:text-xl">Admin Control Center</h1>
+          <p class="text-xs text-slate-400">
+            Live gameplay, mid-game AI difficulty, statistics, /winaprize & blacklist
+          </p>
         </div>
       </div>
 
@@ -295,7 +339,7 @@
       <div class="mx-auto mt-16 max-w-md rounded-2xl border border-slate-800 bg-slate-900/90 p-6 shadow-2xl">
         <h2 class="text-base font-bold text-white">Admin Authentication</h2>
         <p class="mt-1 text-xs text-slate-400">
-          Enter the server admin password to watch live user games in real time.
+          Enter the server admin password to access live games, stats, /winaprize controls, and blacklist.
         </p>
 
         {#if loginError}
@@ -330,195 +374,283 @@
         </form>
       </div>
     {:else}
-      <!-- Stats Strip -->
-      <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
-          <div class="text-xs text-slate-400">Total Sessions</div>
-          <div class="mt-1 font-mono text-2xl font-bold text-white">{stats.total}</div>
-        </div>
-        <div class="rounded-2xl border border-emerald-500/30 bg-emerald-950/20 p-4">
-          <div class="text-xs text-emerald-300">Live / Playing</div>
-          <div class="mt-1 font-mono text-2xl font-bold text-emerald-300">{stats.playing}</div>
-        </div>
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
-          <div class="text-xs text-slate-400">Finished Games</div>
-          <div class="mt-1 font-mono text-2xl font-bold text-slate-200">{stats.finished}</div>
-        </div>
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
-          <div class="text-xs text-slate-400">Player vs Player</div>
-          <div class="mt-1 font-mono text-2xl font-bold text-indigo-300">{stats.pvp}</div>
-        </div>
-      </div>
+      <!-- Admin Navigation Tabs -->
+      <nav class="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3">
+        {#each [
+          { id: 'live', label: `Live Games (${stats.playing})` },
+          { id: 'stats', label: 'Statistics & History' },
+          { id: 'prize', label: `/winaprize Control (${stats.prizeLive} live)` },
+          { id: 'blacklist', label: 'Username Blacklist' },
+        ] as tab}
+          <button
+            type="button"
+            onclick={() => (activeTab = tab.id)}
+            class="rounded-xl px-4 py-2 text-xs font-semibold transition {activeTab === tab.id
+              ? 'bg-indigo-600 text-white shadow'
+              : 'border border-slate-800 bg-slate-900/70 text-slate-400 hover:text-slate-100'}"
+          >
+            {tab.label}
+          </button>
+        {/each}
+      </nav>
 
-      <!-- Filter & Search Bar -->
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/80 p-1">
-          {#each [
-            { id: 'all', label: 'All Games' },
-            { id: 'playing', label: 'Live Playing' },
-            { id: 'finished', label: 'Finished' },
-          ] as tab}
-            <button
-              type="button"
-              onclick={() => (filterStatus = tab.id)}
-              class="rounded-lg px-3 py-1.5 text-xs font-semibold transition {filterStatus === tab.id
-                ? 'bg-indigo-600 text-white'
-                : 'text-slate-400 hover:text-slate-200'}"
-            >
-              {tab.label}
-            </button>
-          {/each}
-        </div>
-
-        <input
-          type="search"
-          bind:value={searchQuery}
-          placeholder="Filter by username or session ID…"
-          class="w-full rounded-xl border border-slate-800 bg-slate-900/90 px-3.5 py-2 text-xs text-slate-200 placeholder-slate-500 focus:border-indigo-500 focus:outline-none sm:w-72"
-        />
-      </div>
-
-      <!-- Live Multi-Game Grid -->
-      {#if sessionsList.length === 0}
+      {#if adminToast}
         <div
-          class="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-16 text-center"
+          class="rounded-xl border border-emerald-500/40 bg-emerald-950/60 px-4 py-2.5 text-xs font-medium text-emerald-200"
         >
-          <p class="text-sm font-medium text-slate-300">No active games match this filter.</p>
-          <p class="mt-1 text-xs text-slate-500">
-            As soon as players open the game and make moves, their live boards will appear here in real time.
-          </p>
+          {adminToast}
         </div>
-      {:else}
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {#each sessionsList as s (s.session_id)}
-            {@const p1 = s.players?.['1']}
-            {@const p2 = s.players?.['2']}
-            <article
-              class="flex flex-col justify-between rounded-2xl border bg-slate-900/80 p-4 shadow-lg transition {s.status ===
-              'playing'
-                ? 'border-indigo-500/35'
-                : 'border-slate-800'}"
+      {/if}
+
+      {#if activeTab === 'live'}
+        <!-- Stats Strip -->
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/75 p-4">
+            <div class="text-xs text-slate-400">Active Sessions</div>
+            <div class="mt-1 font-mono text-2xl font-bold text-white">{stats.total}</div>
+          </div>
+          <div class="rounded-2xl border border-emerald-500/30 bg-emerald-950/20 p-4">
+            <div class="text-xs text-emerald-300">Live Playing</div>
+            <div class="mt-1 font-mono text-2xl font-bold text-emerald-300">{stats.playing}</div>
+          </div>
+          <div class="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-4">
+            <div class="text-xs text-amber-300">Live /winaprize</div>
+            <div class="mt-1 font-mono text-2xl font-bold text-amber-300">{stats.prizeLive}</div>
+          </div>
+          <div class="rounded-2xl border border-indigo-500/30 bg-indigo-950/20 p-4">
+            <div class="text-xs text-indigo-300">Live Online Friend</div>
+            <div class="mt-1 font-mono text-2xl font-bold text-indigo-300">{stats.onlineLive}</div>
+          </div>
+        </div>
+
+        <!-- Filter & Search Bar -->
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-900/80 p-1">
+              {#each [
+                { id: 'all', label: 'All' },
+                { id: 'playing', label: 'Live' },
+                { id: 'finished', label: 'Finished' },
+              ] as tab}
+                <button
+                  type="button"
+                  onclick={() => (filterStatus = tab.id)}
+                  class="rounded-lg px-3 py-1.5 text-xs font-semibold transition {filterStatus === tab.id
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-slate-400 hover:text-slate-200'}"
+                >
+                  {tab.label}
+                </button>
+              {/each}
+            </div>
+
+            <select
+              bind:value={channelFilter}
+              class="rounded-xl border border-slate-800 bg-slate-900/90 px-3 py-2 text-xs text-slate-200"
             >
-              <!-- Card Header -->
-              <div class="space-y-2">
-                <div class="flex items-start justify-between gap-2">
-                  <div class="min-w-0">
-                    <div class="flex items-center gap-2">
-                      <span class="truncate text-sm font-bold text-white">{s.username}</span>
-                      <span
-                        class="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase {s.status ===
-                        'playing'
-                          ? 'bg-emerald-500/15 text-emerald-300'
-                          : s.status === 'win'
-                            ? 'bg-indigo-500/20 text-indigo-300'
-                            : 'bg-slate-800 text-slate-300'}"
-                      >
-                        {s.status === 'playing'
-                          ? 'Live'
-                          : s.status === 'win'
-                            ? `Won: ${s.players?.[String(s.winner)]?.name}`
-                            : 'Draw'}
-                      </span>
+              <option value="all">All Channels</option>
+              <option value="winaprize">/winaprize</option>
+              <option value="normal">Normal</option>
+              <option value="online_pvp">Online Friend</option>
+            </select>
+          </div>
+
+          <input
+            type="search"
+            bind:value={searchQuery}
+            placeholder="Filter by username, #room, or ID…"
+            class="w-full rounded-xl border border-slate-800 bg-slate-900/90 px-3.5 py-2 text-xs text-slate-200 placeholder-slate-500 focus:border-indigo-500 focus:outline-none sm:w-72"
+          />
+        </div>
+
+        <!-- Live Multi-Game Grid -->
+        {#if sessionsList.length === 0}
+          <div
+            class="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-16 text-center"
+          >
+            <p class="text-sm font-medium text-slate-300">No active games match this filter.</p>
+            <p class="mt-1 text-xs text-slate-500">
+              Live boards appear here in real time as players start games on /, /winaprize, or /game#XXXXXX.
+            </p>
+          </div>
+        {:else}
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {#each sessionsList as s (s.session_id)}
+              {@const p1 = s.players?.['1']}
+              {@const p2 = s.players?.['2']}
+              <article
+                class="flex flex-col justify-between rounded-2xl border bg-slate-900/80 p-4 shadow-lg transition {s.channel ===
+                'winaprize'
+                  ? 'border-amber-500/45'
+                  : s.status === 'playing'
+                    ? 'border-indigo-500/35'
+                    : 'border-slate-800'}"
+              >
+                <!-- Card Header -->
+                <div class="space-y-2">
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="truncate text-sm font-bold text-white">{s.username}</span>
+                        {#if s.channel === 'winaprize'}
+                          <span
+                            class="rounded-full border border-amber-400/50 bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-200"
+                          >
+                            Prize
+                          </span>
+                        {:else if s.channel === 'online_pvp'}
+                          <span
+                            class="rounded-full border border-emerald-400/50 bg-emerald-500/20 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-200"
+                          >
+                            #{s.room_code}
+                          </span>
+                        {/if}
+                        <span
+                          class="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase {s.status ===
+                          'playing'
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : s.status === 'win'
+                              ? 'bg-indigo-500/20 text-indigo-300'
+                              : 'bg-slate-800 text-slate-300'}"
+                        >
+                          {s.waiting_for_opponent
+                            ? 'Waiting'
+                            : s.status === 'playing'
+                              ? 'Live'
+                              : s.status === 'win'
+                                ? `Won: ${s.players?.[String(s.winner)]?.name}`
+                                : 'Draw'}
+                        </span>
+                      </div>
+                      <p class="mt-0.5 truncate text-[11px] text-slate-400">
+                        <span class="text-rose-400">{p1?.name}</span> vs
+                        <span class="text-amber-300">{p2?.name}</span>
+                      </p>
                     </div>
-                    <p class="mt-0.5 truncate text-[11px] text-slate-400">
-                      <span class="text-rose-400">{p1?.name}</span> vs
-                      <span class="text-amber-300">{p2?.name}</span>
-                    </p>
+
+                    <span class="shrink-0 font-mono text-[10px] text-slate-500">
+                      {formatTimeAgo(s.updated_at)}
+                    </span>
                   </div>
 
-                  <span class="shrink-0 font-mono text-[10px] text-slate-500">
-                    {formatTimeAgo(s.updated_at)}
-                  </span>
-                </div>
-
-                <!-- Tags -->
-                <div class="flex flex-wrap items-center gap-1.5 text-[10px]">
-                  <span class="rounded bg-slate-800 px-1.5 py-0.5 font-medium text-slate-300">
-                    {formatMode(s.config.mode)}
-                  </span>
-                  <span class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-400">
-                    {s.config.rows}×{s.config.cols} · C{s.config.align}
-                  </span>
-                  {#if s.config.mode !== 'player_vs_player'}
-                    <span
-                      class="rounded border px-1.5 py-0.5 font-semibold {LEVEL_MAP[
-                        s.config.ai_level
-                      ]?.pill || 'border-slate-700 text-slate-300'}"
-                    >
-                      {formatLevel(s.config.ai_level)}
+                  <!-- Tags -->
+                  <div class="flex flex-wrap items-center gap-1.5 text-[10px]">
+                    <span class="rounded bg-slate-800 px-1.5 py-0.5 font-medium text-slate-300">
+                      {formatMode(s.config.mode)}
                     </span>
-                  {/if}
-                  <span class="ml-auto font-mono text-slate-400">
-                    {s.move_history.length} moves
-                  </span>
-                </div>
-              </div>
-
-              <!-- Live Mini Board -->
-              <div
-                class="my-3 rounded-xl border border-indigo-400/20 bg-gradient-to-b from-indigo-950/90 to-slate-950 p-2"
-              >
-                <div
-                  class="grid gap-1"
-                  style="grid-template-columns: repeat({s.config.cols}, minmax(0, 1fr));"
-                >
-                  {#each s.grid as rowArr, rIdx}
-                    {#each rowArr as val, cIdx}
-                      {@const isLast =
-                        s.last_move && s.last_move.row === rIdx && s.last_move.col === cIdx}
-                      {@const isWin = isWinningCell(s, rIdx, cIdx)}
-                      <div
-                        class="flex aspect-square items-center justify-center rounded-full bg-slate-950/90 p-[8%]"
+                    <span class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-400">
+                      {s.config.rows}×{s.config.cols} · C{s.config.align}
+                    </span>
+                    {#if s.config.mode !== 'player_vs_player'}
+                      <span
+                        class="rounded border px-1.5 py-0.5 font-semibold {LEVEL_MAP[
+                          s.config.ai_level
+                        ]?.pill || 'border-slate-700 text-slate-300'}"
                       >
-                        {#if val === 1}
-                          <div
-                            class="h-full w-full rounded-full bg-rose-500 {isWin
-                              ? 'ring-2 ring-emerald-300'
-                              : isLast
-                                ? 'ring-2 ring-white'
-                                : ''}"
-                          ></div>
-                        {:else if val === 2}
-                          <div
-                            class="h-full w-full rounded-full bg-amber-400 {isWin
-                              ? 'ring-2 ring-emerald-300'
-                              : isLast
-                                ? 'ring-2 ring-white'
-                                : ''}"
-                          ></div>
-                        {/if}
-                      </div>
-                    {/each}
-                  {/each}
+                        {formatLevel(s.config.ai_level)}
+                      </span>
+                    {/if}
+                    <span class="ml-auto font-mono text-slate-400">
+                      {s.move_history.length} moves
+                    </span>
+                  </div>
                 </div>
-              </div>
 
-              <!-- Footer Actions -->
-              <div class="flex items-center justify-between gap-2 pt-1">
-                <span class="font-mono text-[10px] text-slate-500">
-                  ID {s.session_id.slice(0, 8)}
-                </span>
-                <div class="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onclick={() => (spectateId = s.session_id)}
-                    class="rounded-lg bg-indigo-600/90 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                <!-- Live Mini Board -->
+                <div
+                  class="my-3 rounded-xl border border-indigo-400/20 bg-gradient-to-b from-indigo-950/90 to-slate-950 p-2"
+                >
+                  <div
+                    class="grid gap-1"
+                    style="grid-template-columns: repeat({s.config.cols}, minmax(0, 1fr));"
                   >
-                    Spectate Live
-                  </button>
-                  <button
-                    type="button"
-                    onclick={() => handleDeleteSession(s.session_id)}
-                    class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-400 hover:border-rose-500/50 hover:text-rose-300"
-                    title="Delete record"
-                  >
-                    Remove
-                  </button>
+                    {#each s.grid as rowArr, rIdx}
+                      {#each rowArr as val, cIdx}
+                        {@const isLast =
+                          s.last_move && s.last_move.row === rIdx && s.last_move.col === cIdx}
+                        {@const isWin = isWinningCell(s, rIdx, cIdx)}
+                        <div
+                          class="flex aspect-square items-center justify-center rounded-full bg-slate-950/90 p-[8%]"
+                        >
+                          {#if val === 1}
+                            <div
+                              class="h-full w-full rounded-full bg-rose-500 {isWin
+                                ? 'ring-2 ring-emerald-300'
+                                : isLast
+                                  ? 'ring-2 ring-white'
+                                  : ''}"
+                            ></div>
+                          {:else if val === 2}
+                            <div
+                              class="h-full w-full rounded-full bg-amber-400 {isWin
+                                ? 'ring-2 ring-emerald-300'
+                                : isLast
+                                  ? 'ring-2 ring-white'
+                                  : ''}"
+                            ></div>
+                          {/if}
+                        </div>
+                      {/each}
+                    {/each}
+                  </div>
                 </div>
-              </div>
-            </article>
-          {/each}
-        </div>
+
+                <!-- Live Mid-Game Difficulty Switcher for AI games -->
+                {#if s.config.mode !== 'player_vs_player' && s.status === 'playing'}
+                  <div class="mb-2.5">
+                    <div class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      Live Difficulty Override
+                    </div>
+                    <div class="grid grid-cols-4 gap-1">
+                      {#each LEVELS as lvl}
+                        <button
+                          type="button"
+                          onclick={() => handleLiveDifficultyChange(s, lvl.id)}
+                          class="rounded-md border py-1 text-center text-[10px] font-semibold transition {s
+                            .config.ai_level === lvl.id
+                            ? lvl.active
+                            : 'border-slate-800 bg-slate-950/70 text-slate-400 hover:border-slate-600 hover:text-slate-200'}"
+                        >
+                          {lvl.id === 'impossible' ? 'Imp' : lvl.label}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                <!-- Footer Actions -->
+                <div class="flex items-center justify-between gap-2 pt-1">
+                  <span class="font-mono text-[10px] text-slate-500">
+                    ID {s.session_id.slice(0, 8)}
+                  </span>
+                  <div class="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onclick={() => (spectateId = s.session_id)}
+                      class="rounded-lg bg-indigo-600/90 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                    >
+                      Spectate Live
+                    </button>
+                    <button
+                      type="button"
+                      onclick={() => handleDeleteSession(s.session_id)}
+                      class="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-400 hover:border-rose-500/50 hover:text-rose-300"
+                      title="Delete session"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      {:else if activeTab === 'stats'}
+        <AdminStatsTab {token} refreshTrigger={statsRefreshTick} />
+      {:else if activeTab === 'prize'}
+        <AdminPrizeTab {token} />
+      {:else if activeTab === 'blacklist'}
+        <AdminBlacklistTab {token} />
       {/if}
     {/if}
   </div>
@@ -534,7 +666,7 @@
     <div
       class="thin-scroll max-h-[94vh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
     >
-      <div class="mb-4 flex items-center justify-between border-b border-slate-800 pb-3">
+      <div class="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
         <div>
           <div class="flex items-center gap-2">
             <span class="h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-400"></span>
@@ -546,7 +678,7 @@
             </span>
           </div>
           <p class="mt-0.5 text-xs text-slate-400">
-            Updates automatically in real time as moves are played
+            Updates automatically in real time — switch difficulty below anytime
           </p>
         </div>
         <button
@@ -558,7 +690,7 @@
         </button>
       </div>
 
-      <div class="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_300px]">
+      <div class="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_320px]">
         <Board
           grid={spectatedSession.grid}
           rows={spectatedSession.config.rows}
@@ -573,6 +705,28 @@
         />
 
         <div class="space-y-4">
+          {#if spectatedSession.config.mode !== 'player_vs_player' && spectatedSession.status === 'playing'}
+            <div class="rounded-2xl border border-amber-500/35 bg-amber-950/15 p-3.5">
+              <div class="mb-2 text-xs font-bold uppercase tracking-wider text-amber-300">
+                Change AI Difficulty Mid-Game
+              </div>
+              <div class="grid grid-cols-2 gap-1.5">
+                {#each LEVELS as lvl}
+                  <button
+                    type="button"
+                    onclick={() => handleLiveDifficultyChange(spectatedSession, lvl.id)}
+                    class="rounded-xl border px-2.5 py-2 text-left text-xs font-semibold transition {spectatedSession
+                      .config.ai_level === lvl.id
+                      ? lvl.active
+                      : 'border-slate-800 bg-slate-950/70 text-slate-300 hover:border-slate-600'}"
+                  >
+                    {lvl.label}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
+
           {#if spectatedSession.config.mode !== 'player_vs_player'}
             <AiInspector
               aiInfo={spectatedSession.ai_info}

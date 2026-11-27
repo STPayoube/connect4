@@ -8,6 +8,12 @@
     undoMove,
   } from './lib/api.js';
   import { formatLevel } from './lib/levels.js';
+  import {
+    isSoundEnabled,
+    playDropSound,
+    playWinSound,
+    setSoundEnabled,
+  } from './lib/sound.js';
   import Board from './components/Board.svelte';
   import StatusBanner from './components/StatusBanner.svelte';
   import GameControls from './components/GameControls.svelte';
@@ -15,6 +21,8 @@
   import AiInspector from './components/AiInspector.svelte';
   import GameSettingsModal from './components/GameSettingsModal.svelte';
   import AdminPanel from './components/AdminPanel.svelte';
+  import PrizeGameView from './components/PrizeGameView.svelte';
+  import OnlineRoomView from './components/OnlineRoomView.svelte';
 
   const USERNAME_STORAGE_KEY = 'connect4_username';
 
@@ -32,19 +40,33 @@
     random_start: false,
   };
 
-  function detectAdminRoute() {
-    if (typeof window === 'undefined') return false;
-    return (
-      window.location.pathname.replace(/\/+$/, '') === '/admin' ||
-      window.location.hash === '#/admin'
-    );
+  function detectRoute() {
+    if (typeof window === 'undefined') return { view: 'normal', roomCode: '' };
+    const path = window.location.pathname.replace(/\/+$/, '') || '/';
+    const hash = window.location.hash || '';
+
+    if (path === '/admin' || hash === '#/admin') {
+      return { view: 'admin', roomCode: '' };
+    }
+    if (path === '/winaprize') {
+      return { view: 'winaprize', roomCode: '' };
+    }
+    if (path === '/game') {
+      const code = hash.replace(/^#/, '').trim().toUpperCase();
+      return { view: 'room', roomCode: code };
+    }
+    return { view: 'normal', roomCode: '' };
   }
 
-  let isAdminView = $state(detectAdminRoute());
+  const initialRoute = detectRoute();
+  let activeView = $state(initialRoute.view); // normal | admin | winaprize | room
+  let roomCode = $state(initialRoute.roomCode);
 
   let username = $state('');
   let usernameDraft = $state('');
+  let usernameError = $state(null);
   let showUsernameModal = $state(false);
+  let soundOn = $state(isSoundEnabled());
 
   let game = $state(null);
   let isLoading = $state(false);
@@ -62,7 +84,7 @@
 
   let canHumanInteract = $derived(
     Boolean(
-      !isAdminView &&
+      activeView === 'normal' &&
         !settingsOpen &&
         !showUsernameModal &&
         game &&
@@ -95,9 +117,11 @@
     isThinking = false;
   }
 
-  function syncViewState(admin) {
-    isAdminView = admin;
-    if (admin) {
+  function applyRoute(nextView, nextRoomCode = '') {
+    activeView = nextView;
+    roomCode = nextRoomCode;
+
+    if (nextView !== 'normal') {
       cancelPendingWork();
       showUsernameModal = false;
       settingsOpen = false;
@@ -110,21 +134,33 @@
     }
   }
 
-  function navigateTo(admin) {
-    const targetPath = admin ? '/admin' : '/';
-    if (window.location.pathname !== targetPath) {
-      window.history.pushState({}, '', targetPath);
+  function navigateTo(view, code = '') {
+    let targetUrl = '/';
+    if (view === 'admin') targetUrl = '/admin';
+    else if (view === 'winaprize') targetUrl = '/winaprize';
+    else if (view === 'room') targetUrl = code ? `/game#${code}` : '/game';
+
+    const currentFull = `${window.location.pathname}${window.location.hash}`;
+    if (currentFull !== targetUrl) {
+      window.history.pushState({}, '', targetUrl);
     }
-    syncViewState(admin);
+    applyRoute(view, code);
   }
 
-  function handlePopState() {
-    syncViewState(detectAdminRoute());
+  function handleUrlChange() {
+    const r = detectRoute();
+    applyRoute(r.view, r.roomCode);
+  }
+
+  function toggleSound() {
+    soundOn = !soundOn;
+    setSoundEnabled(soundOn);
   }
 
   async function initSession(config = DEFAULT_CONFIG) {
     cancelPendingWork();
     error = null;
+    usernameError = null;
     isLoading = true;
     const controller = new AbortController();
     activeController = controller;
@@ -138,8 +174,14 @@
       maybeTriggerOpeningHumanVsAiMove(state);
     } catch (err) {
       if (err.name === 'AbortError' || activeController !== controller) return;
-      error = err.message || 'Could not reach Connect 4 backend.';
       isLoading = false;
+      if (err.status === 403) {
+        usernameError = err.message;
+        usernameDraft = username;
+        showUsernameModal = true;
+      } else {
+        error = err.message || 'Could not reach Connect 4 backend.';
+      }
     }
   }
 
@@ -159,7 +201,7 @@
       openingAiTimer = setTimeout(() => {
         openingAiTimer = null;
         if (
-          !isAdminView &&
+          activeView === 'normal' &&
           game?.session_id === targetSessionId &&
           game?.updated_at === targetUpdatedAt &&
           game?.status === 'playing' &&
@@ -183,6 +225,11 @@
       const afterHuman = await playHumanMove(game.session_id, col, false, signal);
       if (activeController !== controller) return;
       game = afterHuman;
+      if (afterHuman.last_move) playDropSound(afterHuman.last_move.row);
+      if (afterHuman.status === 'win') {
+        playWinSound();
+        return;
+      }
 
       if (
         afterHuman.status === 'playing' &&
@@ -191,6 +238,8 @@
         const afterAi = await stepAiMove(afterHuman.session_id, signal);
         if (activeController !== controller) return;
         game = afterAi;
+        if (afterAi.last_move) playDropSound(afterAi.last_move.row);
+        if (afterAi.status === 'win') playWinSound();
       }
     } catch (err) {
       if (err.name === 'AbortError' || activeController !== controller) return;
@@ -222,6 +271,8 @@
       const updated = await stepAiMove(game.session_id, signal);
       if (activeController !== controller) return;
       game = updated;
+      if (updated.last_move) playDropSound(updated.last_move.row);
+      if (updated.status === 'win') playWinSound();
       if (updated.status !== 'playing') {
         isAutoPlaying = false;
       }
@@ -323,7 +374,12 @@
       if (err.status === 404) {
         return initSession(baseCfg);
       }
-      error = err.message || 'Failed to reset game.';
+      if (err.status === 403) {
+        usernameError = err.message;
+        showUsernameModal = true;
+      } else {
+        error = err.message || 'Failed to reset game.';
+      }
       isLoading = false;
     }
   }
@@ -373,13 +429,19 @@
     handleNewGame(newConfig);
   }
 
+  function persistUsername(cleaned) {
+    username = cleaned;
+    usernameDraft = cleaned;
+    localStorage.setItem(USERNAME_STORAGE_KEY, cleaned);
+  }
+
   function handleSaveUsername(event) {
     event.preventDefault();
     const cleaned = usernameDraft.trim().slice(0, 32);
     if (!cleaned) return;
+    usernameError = null;
     const changed = cleaned !== username;
-    username = cleaned;
-    localStorage.setItem(USERNAME_STORAGE_KEY, cleaned);
+    persistUsername(cleaned);
     showUsernameModal = false;
     if (!game) {
       initSession({ ...DEFAULT_CONFIG, username: cleaned });
@@ -395,29 +457,48 @@
   }
 
   onMount(() => {
-    window.addEventListener('popstate', handlePopState);
+    window.addEventListener('popstate', handleUrlChange);
+    window.addEventListener('hashchange', handleUrlChange);
     const savedUser = (localStorage.getItem(USERNAME_STORAGE_KEY) || '').trim();
     if (savedUser) {
       username = savedUser;
       usernameDraft = savedUser;
-      if (!isAdminView) {
+      if (activeView === 'normal') {
         initSession({ ...DEFAULT_CONFIG, username: savedUser });
       }
-    } else if (!isAdminView) {
+    } else if (activeView === 'normal') {
       showUsernameModal = true;
     }
   });
 
   onDestroy(() => {
     if (typeof window !== 'undefined') {
-      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('popstate', handleUrlChange);
+      window.removeEventListener('hashchange', handleUrlChange);
     }
     cancelPendingWork();
   });
 </script>
 
-{#if isAdminView}
-  <AdminPanel onBackToGame={() => navigateTo(false)} />
+{#if activeView === 'admin'}
+  <AdminPanel onBackToGame={() => navigateTo('normal')} />
+{:else if activeView === 'winaprize'}
+  <PrizeGameView
+    {username}
+    onSaveUsername={persistUsername}
+    onGoHome={() => navigateTo('normal')}
+  />
+{:else if activeView === 'room'}
+  <OnlineRoomView
+    initialCode={roomCode}
+    {username}
+    onSaveUsername={persistUsername}
+    onBackHome={() => navigateTo('normal')}
+    onRoomCodeChange={(code) => {
+      roomCode = code;
+      window.history.replaceState({}, '', `/game#${code}`);
+    }}
+  />
 {:else}
   <div class="min-h-screen px-4 py-5 sm:px-6 lg:px-8">
     <div class="mx-auto max-w-6xl space-y-5">
@@ -453,11 +534,21 @@
         </div>
 
         <div class="flex items-center gap-2">
+          <button
+            type="button"
+            onclick={toggleSound}
+            class="rounded-full border border-slate-800 bg-slate-900/70 px-2.5 py-1.5 text-xs text-slate-400 transition hover:border-slate-600 hover:text-slate-200"
+            title={soundOn ? 'Mute sound effects' : 'Enable sound effects'}
+          >
+            {soundOn ? '🔊' : '🔇'}
+          </button>
+
           {#if username}
             <button
               type="button"
               onclick={() => {
                 usernameDraft = username;
+                usernameError = null;
                 showUsernameModal = true;
               }}
               class="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-900/90 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-indigo-400/50 hover:text-white"
@@ -471,7 +562,7 @@
 
           <button
             type="button"
-            onclick={() => navigateTo(true)}
+            onclick={() => navigateTo('admin')}
             class="rounded-full border border-slate-800 bg-slate-900/70 px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:border-slate-600 hover:text-slate-200"
           >
             Admin
@@ -528,6 +619,7 @@
                 random_start: false,
               })}
             onRandomStart={handleRandomStart}
+            onPlayWithFriend={() => navigateTo('room', '')}
             onSwitchMode={handleSwitchMode}
             onQuickLevel={handleQuickLevel}
             onUndo={handleUndo}
@@ -557,11 +649,19 @@
     >
       <div class="w-full max-w-sm rounded-2xl border border-slate-700/80 bg-slate-900 p-6 shadow-2xl">
         <h2 class="text-base font-bold text-white">
-          {username ? 'Change Username' : 'Welcome to Connect 4'}
+          {username && !usernameError ? 'Change Username' : 'Welcome to Connect 4'}
         </h2>
         <p class="mt-1 text-xs text-slate-400">
           Enter your username to start playing. Your live game will be tagged with this name.
         </p>
+
+        {#if usernameError}
+          <div
+            class="mt-3 rounded-xl border border-rose-500/40 bg-rose-950/60 px-3 py-2 text-xs text-rose-200"
+          >
+            {usernameError}
+          </div>
+        {/if}
 
         <form onsubmit={handleSaveUsername} class="mt-4 space-y-4">
           <input
@@ -574,10 +674,10 @@
           />
 
           <div class="flex items-center justify-between gap-2">
-            {#if !username}
+            {#if !username || usernameError}
               <button
                 type="button"
-                onclick={() => navigateTo(true)}
+                onclick={() => navigateTo('admin')}
                 class="text-xs font-medium text-slate-500 hover:text-slate-300"
               >
                 Admin login
@@ -587,7 +687,7 @@
             {/if}
 
             <div class="flex items-center gap-2">
-              {#if username}
+              {#if username && !usernameError}
                 <button
                   type="button"
                   onclick={() => (showUsernameModal = false)}
@@ -600,7 +700,7 @@
                 type="submit"
                 class="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500"
               >
-                {username ? 'Save' : 'Start Playing'}
+                {username && !usernameError ? 'Save' : 'Start Playing'}
               </button>
             </div>
           </div>

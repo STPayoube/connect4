@@ -1,7 +1,13 @@
 <script>
   import { formatLevel, LEVEL_MAP } from '../lib/levels.js';
 
-  let { game = null, isThinking = false, error = null, onDismissError = () => {} } = $props();
+  let {
+    game = null,
+    isThinking = false,
+    error = null,
+    hideAiLevel = false,
+    onDismissError = () => {},
+  } = $props();
 
   let p1 = $derived(game?.players?.['1'] || null);
   let p2 = $derived(game?.players?.['2'] || null);
@@ -44,13 +50,21 @@
           <div class="flex items-center gap-2">
             <span class="truncate text-sm font-semibold text-slate-100">{p1?.name}</span>
             {#if p1?.type === 'ai'}
-              <span
-                class="rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide {LEVEL_MAP[
-                  p1.level
-                ]?.pill || 'border-slate-700 bg-slate-800 text-slate-300'}"
-              >
-                {formatLevel(p1.level)}
-              </span>
+              {#if !hideAiLevel && p1.level}
+                <span
+                  class="rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide {LEVEL_MAP[
+                    p1.level
+                  ]?.pill || 'border-slate-700 bg-slate-800 text-slate-300'}"
+                >
+                  {formatLevel(p1.level)}
+                </span>
+              {:else}
+                <span
+                  class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-300"
+                >
+                  AI
+                </span>
+              {/if}
             {:else}
               <span
                 class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-300"
@@ -126,13 +140,21 @@
           <div class="flex items-center gap-2">
             <span class="truncate text-sm font-semibold text-slate-100">{p2?.name}</span>
             {#if p2?.type === 'ai'}
-              <span
-                class="rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide {LEVEL_MAP[
-                  p2.level
-                ]?.pill || 'border-slate-700 bg-slate-800 text-slate-300'}"
-              >
-                {formatLevel(p2.level)}
-              </span>
+              {#if !hideAiLevel && p2.level}
+                <span
+                  class="rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide {LEVEL_MAP[
+                    p2.level
+                  ]?.pill || 'border-slate-700 bg-slate-800 text-slate-300'}"
+                >
+                  {formatLevel(p2.level)}
+                </span>
+              {:else}
+                <span
+                  class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-300"
+                >
+                  AI
+                </span>
+              {/if}
             {:else}
               <span
                 class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-300"

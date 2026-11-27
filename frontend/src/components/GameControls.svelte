@@ -9,6 +9,7 @@
     showInspector = true,
     onNewGame = () => {},
     onRandomStart = () => {},
+    onPlayWithFriend = () => {},
     onSwitchMode = () => {},
     onQuickLevel = () => {},
     onUndo = () => {},
@@ -74,6 +75,21 @@
       </div>
     </div>
   {/if}
+
+  <!-- Play Against a Friend Online (QR Code) -->
+  <button
+    type="button"
+    onclick={onPlayWithFriend}
+    class="flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2.5 text-sm font-semibold text-emerald-200 shadow-sm transition hover:bg-emerald-500/25 active:scale-[0.98]"
+  >
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <path stroke-linecap="round" d="M14 14h3v3h-3zM19 14v7M14 19h5" />
+    </svg>
+    Play vs Friend Online (QR Code)
+  </button>
 
   <!-- Primary Actions -->
   <div class="grid grid-cols-2 gap-2">

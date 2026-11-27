@@ -40,7 +40,7 @@ jobs:
 
       - name: Sync project files to VPS
         run: |
-          ssh -p 22 "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "mkdir -p ${DEPLOY_PATH}/backend ${DEPLOY_PATH}/frontend/dist ${DEPLOY_PATH}/deploy"
+          ssh -p 22 "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "mkdir -p ${DEPLOY_PATH}/backend ${DEPLOY_PATH}/frontend/dist ${DEPLOY_PATH}/deploy ${DEPLOY_PATH}/data"
 
           rsync -avz --delete \
             --exclude='.venv' \
@@ -80,6 +80,7 @@ jobs:
             ssh -p 22 "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "cat > ${DEPLOY_PATH}/backend/.env && chmod 600 ${DEPLOY_PATH}/backend/.env" <<EOF
           ADMIN_PASSWORD=${CLEAN_ADMIN_PWD}
           CORS_ORIGINS=${CORS_ORIGINS}
+          CONNECT4_DB_PATH=${DEPLOY_PATH}/data/connect4.db
           EOF
             echo "Updated ${DEPLOY_PATH}/backend/.env (ADMIN_PASSWORD length: ${#CLEAN_ADMIN_PWD})"
           fi

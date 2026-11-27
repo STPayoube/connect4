@@ -8,6 +8,7 @@ from weakc4 import DEPTH_TO_LEVEL, LEVEL_TO_DEPTH
 MAX_AI_DEPTH = int(os.getenv("MAX_AI_DEPTH", "4"))
 DifficultyLevel = Literal["easy", "medium", "hard", "impossible"]
 GameMode = Literal["human_vs_ai", "player_vs_player", "ai_vs_ai"]
+GameChannel = Literal["normal", "winaprize", "online_pvp"]
 
 
 class GameConfig(BaseModel):
@@ -33,11 +34,9 @@ class GameConfig(BaseModel):
                 f"align ({self.align}) cannot exceed min(rows, cols) ({max_align})."
             )
 
-        # Normalize usernames
         self.username = (self.username or "Guest").strip()[:32] or "Guest"
         self.player2_name = (self.player2_name or "Player 2").strip()[:32] or "Player 2"
 
-        # Synchronize ai_level <-> ai_depth (level takes precedence if supplied)
         if self.ai_level is not None:
             self.ai_depth = LEVEL_TO_DEPTH[self.ai_level]
         elif self.ai_depth is not None:
@@ -90,8 +89,93 @@ class HumanMoveRequest(BaseModel):
     )
 
 
+# --- Win a Prize ---
+
+
+class WinAPrizeConfig(BaseModel):
+    enabled: bool = True
+    rows: int = Field(default=6, ge=4, le=10)
+    cols: int = Field(default=7, ge=4, le=10)
+    align: int = Field(default=4, ge=3, le=10)
+    ai_level: DifficultyLevel = "medium"
+    starting_player: Union[Literal[1, 2], Literal["random"]] = 1
+    human_player: Literal[1, 2] = 1
+    random_start: bool = False
+    allow_undo: bool = False
+    title: str = Field(default="Connect 4 Challenge", max_length=80)
+    subtitle: str = Field(default="Beat the AI to win a prize!", max_length=140)
+
+    @model_validator(mode="after")
+    def check_align(self):
+        max_align = min(self.rows, self.cols)
+        if self.align > max_align:
+            raise ValueError(f"align ({self.align}) cannot exceed min(rows, cols) ({max_align}).")
+        if self.starting_player == "random":
+            self.random_start = True
+        return self
+
+
+class UpdateWinAPrizeConfigRequest(WinAPrizeConfig):
+    apply_to_live_games: bool = True
+
+
+class CreatePrizeGameRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=32)
+    auto_play_opening_ai: bool = False
+
+
+# --- Online Friend Rooms (/game#XXXXXX) ---
+
+
+class CreateRoomRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=32)
+    rows: int = Field(default=6, ge=4, le=10)
+    cols: int = Field(default=7, ge=4, le=10)
+    align: int = Field(default=4, ge=3, le=10)
+    starting_player: Union[Literal[1, 2], Literal["random"]] = 1
+    random_start: bool = False
+
+    @model_validator(mode="after")
+    def check_align(self):
+        max_align = min(self.rows, self.cols)
+        if self.align > max_align:
+            raise ValueError(f"align ({self.align}) cannot exceed min(rows, cols) ({max_align}).")
+        return self
+
+
+class JoinRoomRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=32)
+
+
+class RoomMoveRequest(BaseModel):
+    col: int = Field(..., ge=0)
+    player_token: str = Field(..., min_length=1)
+
+
+class RoomRematchRequest(BaseModel):
+    player_token: str = Field(..., min_length=1)
+    random_start: bool = False
+
+
+# --- Admin ---
+
+
 class AdminLoginRequest(BaseModel):
     password: str = Field(..., min_length=1)
+
+
+class UpdateSessionDifficultyRequest(BaseModel):
+    ai_level: DifficultyLevel
+    ai2_level: Optional[DifficultyLevel] = None
+
+
+class BlacklistEntryRequest(BaseModel):
+    pattern: str = Field(..., min_length=1, max_length=32)
+    match_type: Literal["exact", "contains"] = "exact"
+    reason: str = Field(default="", max_length=120)
+
+
+# --- Response Models ---
 
 
 class PlayerInfo(BaseModel):
@@ -144,6 +228,10 @@ class MoveRecord(BaseModel):
 
 class GameStateResponse(BaseModel):
     session_id: str
+    channel: GameChannel = "normal"
+    room_code: Optional[str] = None
+    waiting_for_opponent: bool = False
+    allow_undo: bool = True
     username: str
     config: GameConfig
     players: dict[str, PlayerInfo]
@@ -160,3 +248,10 @@ class GameStateResponse(BaseModel):
     ai_info: Optional[AiInfo] = None
     created_at: float
     updated_at: float
+
+
+class RoomJoinResponse(BaseModel):
+    room_code: str
+    seat: Literal[0, 1, 2]
+    player_token: Optional[str] = None
+    game: GameStateResponse

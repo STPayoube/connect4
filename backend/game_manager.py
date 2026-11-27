@@ -1,14 +1,16 @@
 import asyncio
 import copy
 import random
+import secrets
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from database import Database
 from schemas import AiInfo, GameConfig, GameStateResponse, MoveRecord, PlayerInfo
-from weakc4 import AI, Connect4, Player
+from weakc4 import AI, LEVEL_TO_DEPTH, Connect4, Player
 
 
 class GameError(Exception):
@@ -39,16 +41,23 @@ class GameSession:
     c4: Connect4
     player_objs: dict[int, Player]
     player_meta: dict[int, PlayerInfo]
+    channel: str = "normal"
+    room_code: Optional[str] = None
+    waiting_for_opponent: bool = False
+    allow_undo: bool = True
+    player_tokens: dict[int, str] = field(default_factory=dict)
     status: str = "playing"
     winner: Optional[int] = None
     winning_cells: list[list[int]] = field(default_factory=list)
     move_history: list[MoveRecord] = field(default_factory=list)
     snapshots: list[UndoSnapshot] = field(default_factory=list)
     last_ai_info: Optional[dict] = None
+    persisted: bool = False
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     lock: threading.Lock = field(default_factory=threading.Lock)
     on_change: Optional[Callable[["GameSession"], None]] = None
+    on_finish: Optional[Callable[["GameSession"], None]] = None
 
     def _notify(self):
         if self.on_change:
@@ -68,7 +77,8 @@ class GameSession:
             )
         )
 
-    def _evaluate_outcome(self):
+    def _evaluate_outcome(self) -> bool:
+        """Evaluate win/draw. Returns True if the game just transitioned to finished."""
         winner, cells = self.c4.check_win()
         if winner is not None:
             self.status = "win"
@@ -82,11 +92,54 @@ class GameSession:
             self.status = "playing"
             self.winner = None
             self.winning_cells = []
+            return False
+
+        if not self.persisted:
+            self.persisted = True
+            return True
+        return False
 
     def _advance_turn(self):
         self.c4.current_player = 2 if self.c4.current_player == 1 else 1
 
-    def _apply_ai_turn(self) -> MoveRecord:
+    def set_ai_level(self, ai_level: str, ai2_level: Optional[str] = None) -> None:
+        """Hot-swap AI difficulty in place while a game is running."""
+        with self.lock:
+            if self.config.mode == "player_vs_player":
+                raise GameError("Cannot change AI difficulty on a Player vs Player game.", status_code=400)
+
+            depth1 = LEVEL_TO_DEPTH[ai_level]
+            lvl2 = ai2_level if (self.config.mode == "ai_vs_ai" and ai2_level) else ai_level
+            depth2 = LEVEL_TO_DEPTH[lvl2]
+
+            self.config.ai_level = ai_level
+            self.config.ai_depth = depth1
+            self.config.ai2_level = lvl2
+            self.config.ai2_depth = depth2
+
+            for pid in (1, 2):
+                obj = self.player_objs[pid]
+                meta = self.player_meta[pid]
+                if isinstance(obj, AI):
+                    target_lvl = lvl2 if (self.config.mode == "ai_vs_ai" and pid == 2) else ai_level
+                    target_depth = depth2 if (self.config.mode == "ai_vs_ai" and pid == 2) else depth1
+                    obj.level = target_lvl
+                    obj.depth = target_depth
+                    meta.level = target_lvl
+                    meta.depth = target_depth
+                    if self.channel == "winaprize":
+                        meta.name = "Connect 4 AI"
+                    elif self.config.mode == "ai_vs_ai":
+                        meta.name = f"AI {pid} ({target_lvl.capitalize()})"
+                    else:
+                        meta.name = f"AI ({target_lvl.capitalize()})"
+                    obj.name = meta.name
+                    self.c4.players[pid][0] = meta.name
+
+            self.updated_at = time.time()
+        self._notify()
+
+    def _apply_ai_turn(self) -> tuple[MoveRecord, bool]:
         if self.status != "playing":
             raise GameError("Game is already finished.", status_code=409)
         active_id = self.c4.current_player
@@ -112,14 +165,17 @@ class GameSession:
             ai_info=AiInfo(**result["ai_info"]),
         )
         self.move_history.append(record)
-        self._evaluate_outcome()
+        just_finished = self._evaluate_outcome()
         if self.status == "playing":
             self._advance_turn()
         self.updated_at = time.time()
-        return record
+        return record, just_finished
 
     def play_human_move(self, col: int, auto_ai_reply: bool = True) -> list[MoveRecord]:
+        just_finished = False
         with self.lock:
+            if self.waiting_for_opponent:
+                raise GameError("Waiting for Player 2 to join the room.", status_code=409)
             if self.status != "playing":
                 raise GameError("Game is already finished.", status_code=409)
 
@@ -153,7 +209,7 @@ class GameSession:
                 ai_info=None,
             )
             self.move_history.append(human_record)
-            self._evaluate_outcome()
+            just_finished = self._evaluate_outcome()
             if self.status == "playing":
                 self._advance_turn()
 
@@ -164,21 +220,27 @@ class GameSession:
                 and self.status == "playing"
                 and self.player_meta[self.c4.current_player].type == "ai"
             ):
-                ai_record = self._apply_ai_turn()
+                ai_record, ai_finished = self._apply_ai_turn()
+                just_finished = just_finished or ai_finished
                 applied.append(ai_record)
 
             self.updated_at = time.time()
+
+        if just_finished and self.on_finish:
+            self.on_finish(self)
         self._notify()
         return applied
 
     def step_ai_move(self) -> list[MoveRecord]:
         with self.lock:
-            applied = [self._apply_ai_turn()]
+            record, just_finished = self._apply_ai_turn()
+        if just_finished and self.on_finish:
+            self.on_finish(self)
         self._notify()
-        return applied
+        return [record]
 
     def _can_undo(self) -> bool:
-        if not self.snapshots:
+        if not self.allow_undo or not self.snapshots:
             return False
         if self.config.mode == "human_vs_ai":
             return any(s.mover_type == "human" for s in self.snapshots)
@@ -187,7 +249,7 @@ class GameSession:
     def undo(self) -> None:
         with self.lock:
             if not self._can_undo():
-                raise GameError("No moves to undo.", status_code=400)
+                raise GameError("Undo is disabled or no moves to undo.", status_code=400)
 
             if self.config.mode == "human_vs_ai":
                 snap = self.snapshots.pop()
@@ -203,26 +265,72 @@ class GameSession:
             self.winning_cells = snap.winning_cells
             self.move_history = self.move_history[: snap.move_history_len]
             self.last_ai_info = snap.last_ai_info
+            if self.status == "playing":
+                self.persisted = False
             self.updated_at = time.time()
         self._notify()
 
-    def to_response(self, moves_applied: Optional[list[MoveRecord]] = None) -> GameStateResponse:
+    def to_response(
+        self,
+        moves_applied: Optional[list[MoveRecord]] = None,
+        for_admin: bool = False,
+    ) -> GameStateResponse:
+        # On /winaprize player responses, hide live difficulty metadata for stealth difficulty switching
+        players_payload = {}
+        for k, meta in self.player_meta.items():
+            if self.channel == "winaprize" and not for_admin and meta.type == "ai":
+                players_payload[str(k)] = PlayerInfo(
+                    id=meta.id, name="Connect 4 AI", type="ai", level=None, depth=None
+                )
+            else:
+                players_payload[str(k)] = meta
+
+        hide_ai_details = self.channel == "winaprize" and not for_admin
+        history_out = (
+            [
+                m.model_copy(update={"ai_info": None}) if m.ai_info is not None else m
+                for m in self.move_history
+            ]
+            if hide_ai_details
+            else list(self.move_history)
+        )
+        applied_out = (
+            [
+                m.model_copy(update={"ai_info": None}) if m.ai_info is not None else m
+                for m in (moves_applied or [])
+            ]
+            if hide_ai_details
+            else (moves_applied or [])
+        )
+
         return GameStateResponse(
             session_id=self.session_id,
+            channel=self.channel,
+            room_code=self.room_code,
+            waiting_for_opponent=self.waiting_for_opponent,
+            allow_undo=self.allow_undo,
             username=self.config.username,
             config=self.config,
-            players={str(k): v for k, v in self.player_meta.items()},
+            players=players_payload,
             grid=[row[:] for row in self.c4.grid],
             current_player=self.c4.current_player,
-            valid_columns=self.c4.get_valid_columns() if self.status == "playing" else [],
+            valid_columns=(
+                self.c4.get_valid_columns()
+                if (self.status == "playing" and not self.waiting_for_opponent)
+                else []
+            ),
             status=self.status,
             winner=self.winner,
             winning_cells=[cell[:] for cell in self.winning_cells],
-            last_move=self.move_history[-1] if self.move_history else None,
-            moves_applied=moves_applied or [],
-            move_history=list(self.move_history),
+            last_move=history_out[-1] if history_out else None,
+            moves_applied=applied_out,
+            move_history=history_out,
             can_undo=self._can_undo(),
-            ai_info=AiInfo(**self.last_ai_info) if self.last_ai_info else None,
+            ai_info=(
+                None
+                if hide_ai_details
+                else (AiInfo(**self.last_ai_info) if self.last_ai_info else None)
+            ),
             created_at=self.created_at,
             updated_at=self.updated_at,
         )
@@ -237,10 +345,16 @@ def _resolve_starting_player(raw_starter, random_start: bool) -> tuple[int, bool
 def _build_session(
     session_id: str,
     config: GameConfig,
+    channel: str = "normal",
+    room_code: Optional[str] = None,
+    waiting_for_opponent: bool = False,
+    allow_undo: bool = True,
+    player_tokens: Optional[dict[int, str]] = None,
     on_change: Optional[Callable[[GameSession], None]] = None,
+    on_finish: Optional[Callable[[GameSession], None]] = None,
 ) -> GameSession:
     if config.mode == "human_vs_ai":
-        ai_label = f"AI ({config.ai_level.capitalize()})"
+        ai_label = "Connect 4 AI" if channel == "winaprize" else f"AI ({config.ai_level.capitalize()})"
         if config.human_player == 1:
             p1 = Player(config.username, 1, "X")
             p2 = AI(ai_label, 2, "O", depth=config.ai_depth, level=config.ai_level)
@@ -257,7 +371,14 @@ def _build_session(
             meta2 = PlayerInfo(id=2, name=config.username, type="human")
     elif config.mode == "player_vs_player":
         p1_name = config.username
-        p2_name = config.player2_name if config.player2_name != config.username else f"{config.player2_name} (P2)"
+        if waiting_for_opponent:
+            p2_name = "Waiting for friend…"
+        else:
+            p2_name = (
+                config.player2_name
+                if config.player2_name != config.username
+                else f"{config.player2_name} (P2)"
+            )
         p1 = Player(p1_name, 1, "X")
         p2 = Player(p2_name, 2, "O")
         meta1 = PlayerInfo(id=1, name=p1_name, type="human")
@@ -289,37 +410,74 @@ def _build_session(
         c4=c4,
         player_objs={1: p1, 2: p2},
         player_meta={1: meta1, 2: meta2},
+        channel=channel,
+        room_code=room_code,
+        waiting_for_opponent=waiting_for_opponent,
+        allow_undo=allow_undo,
+        player_tokens=player_tokens or {},
         on_change=on_change,
+        on_finish=on_finish,
     )
 
 
 class SessionManager:
-    def __init__(self, ttl_seconds: int = 7200, max_sessions: int = 500):
+    def __init__(
+        self,
+        db: Optional[Database] = None,
+        ttl_seconds: int = 7200,
+        max_sessions: int = 500,
+    ):
+        self.db = db
         self._sessions: dict[str, GameSession] = {}
+        self._rooms: dict[str, str] = {}  # HEXCODE -> session_id
         self._lock = threading.Lock()
         self._ttl_seconds = ttl_seconds
         self._max_sessions = max_sessions
-        self._subscribers: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = set()
+        self._admin_subs: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = set()
+        self._room_subs: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]] = {}
         self._sub_lock = threading.Lock()
+
+    # --- Pub/Sub (Admin & Online Rooms) ---
 
     def subscribe_admin(
         self, loop: asyncio.AbstractEventLoop
     ) -> tuple[asyncio.Queue, Callable[[], None]]:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=120)
         entry = (loop, queue)
         with self._sub_lock:
-            self._subscribers.add(entry)
+            self._admin_subs.add(entry)
 
         def unsubscribe():
             with self._sub_lock:
-                self._subscribers.discard(entry)
+                self._admin_subs.discard(entry)
 
         return queue, unsubscribe
 
-    def _broadcast(self, event_type: str, payload: Any):
+    def subscribe_room(
+        self, room_code: str, loop: asyncio.AbstractEventLoop
+    ) -> tuple[asyncio.Queue, Callable[[], None]]:
+        code = room_code.strip().upper()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=60)
+        entry = (loop, queue)
         with self._sub_lock:
-            subs = list(self._subscribers)
+            self._room_subs.setdefault(code, set()).add(entry)
 
+        def unsubscribe():
+            with self._sub_lock:
+                subs = self._room_subs.get(code)
+                if subs:
+                    subs.discard(entry)
+                    if not subs:
+                        self._room_subs.pop(code, None)
+
+        return queue, unsubscribe
+
+    @staticmethod
+    def _push_to_subs(
+        subs: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]],
+        event_type: str,
+        payload: Any,
+    ):
         def _enqueue(q: asyncio.Queue, item: dict):
             try:
                 if q.full():
@@ -339,10 +497,37 @@ class SessionManager:
                 except RuntimeError:
                     pass
 
-    def _broadcast_session(self, session: GameSession):
+    def _broadcast_admin(self, event_type: str, payload: Any):
+        with self._sub_lock:
+            subs = list(self._admin_subs)
+        self._push_to_subs(subs, event_type, payload)
+
+    def _broadcast_room(self, room_code: str, event_type: str, payload: Any):
+        with self._sub_lock:
+            subs = list(self._room_subs.get(room_code, ()))
+        if subs:
+            self._push_to_subs(subs, event_type, payload)
+
+    def _on_session_change(self, session: GameSession):
         with session.lock:
-            snapshot = session.to_response().model_dump()
-        self._broadcast("session_update", snapshot)
+            admin_snapshot = session.to_response(for_admin=True).model_dump()
+            room_code = session.room_code
+            room_snapshot = (
+                session.to_response(for_admin=False).model_dump() if room_code else None
+            )
+        self._broadcast_admin("session_update", admin_snapshot)
+        if room_code and room_snapshot is not None:
+            self._broadcast_room(room_code, "room_update", room_snapshot)
+
+    def _on_session_finish(self, session: GameSession):
+        if self.db is None:
+            return
+        with session.lock:
+            snapshot = session.to_response(for_admin=True).model_dump()
+        self.db.save_finished_game(snapshot)
+        self._broadcast_admin("stats_update", {"session_id": session.session_id})
+
+    # --- Eviction & Listing ---
 
     def _evict_stale(self):
         now = time.time()
@@ -352,14 +537,18 @@ class SessionManager:
             if now - sess.updated_at > self._ttl_seconds
         ]
         for sid in expired:
-            del self._sessions[sid]
-            self._broadcast("session_delete", {"session_id": sid})
+            sess = self._sessions.pop(sid)
+            if sess.room_code:
+                self._rooms.pop(sess.room_code, None)
+            self._broadcast_admin("session_delete", {"session_id": sid})
 
         if len(self._sessions) >= self._max_sessions:
             oldest = sorted(self._sessions.items(), key=lambda item: item[1].updated_at)
             for sid, _ in oldest[: len(self._sessions) - self._max_sessions + 1]:
-                del self._sessions[sid]
-                self._broadcast("session_delete", {"session_id": sid})
+                sess = self._sessions.pop(sid)
+                if sess.room_code:
+                    self._rooms.pop(sess.room_code, None)
+                self._broadcast_admin("session_delete", {"session_id": sid})
 
     def list_all(self) -> list[dict]:
         with self._lock:
@@ -369,14 +558,18 @@ class SessionManager:
         results = []
         for sess in sessions_copy:
             with sess.lock:
-                results.append(sess.to_response().model_dump())
+                results.append(sess.to_response(for_admin=True).model_dump())
         results.sort(key=lambda s: s["updated_at"], reverse=True)
         return results
+
+    # --- Standard & Prize Sessions ---
 
     def create(
         self,
         raw_payload: dict,
         auto_play_opening_ai: bool = False,
+        channel: str = "normal",
+        allow_undo: bool = True,
     ) -> GameStateResponse:
         starter, was_random = _resolve_starting_player(
             raw_payload.get("starting_player", 1),
@@ -385,7 +578,14 @@ class SessionManager:
         cfg_data = {**raw_payload, "starting_player": starter, "random_start": was_random}
         config = GameConfig(**cfg_data)
         session_id = str(uuid.uuid4())
-        session = _build_session(session_id, config, on_change=self._broadcast_session)
+        session = _build_session(
+            session_id,
+            config,
+            channel=channel,
+            allow_undo=allow_undo,
+            on_change=self._on_session_change,
+            on_finish=self._on_session_finish,
+        )
 
         with self._lock:
             self._evict_stale()
@@ -399,7 +599,7 @@ class SessionManager:
         ):
             applied = session.step_ai_move()
         else:
-            self._broadcast_session(session)
+            self._on_session_change(session)
 
         with session.lock:
             return session.to_response(moves_applied=applied)
@@ -419,9 +619,11 @@ class SessionManager:
         auto_play_opening_ai: bool = False,
     ) -> GameStateResponse:
         existing = self.get(session_id)
+        if existing.channel == "online_pvp":
+            raise GameError("Use /api/rooms/{code}/rematch for online rooms.", status_code=400)
+
         merged = existing.config.model_dump()
 
-        # Respect explicit level vs depth overrides cleanly
         if overrides.get("ai_level") is not None and overrides.get("ai_depth") is None:
             merged["ai_depth"] = None
         if overrides.get("ai_depth") is not None and overrides.get("ai_level") is None:
@@ -459,7 +661,14 @@ class SessionManager:
         except Exception as exc:
             raise GameError(str(exc), status_code=422) from exc
 
-        new_session = _build_session(session_id, new_config, on_change=self._broadcast_session)
+        new_session = _build_session(
+            session_id,
+            new_config,
+            channel=existing.channel,
+            allow_undo=existing.allow_undo,
+            on_change=self._on_session_change,
+            on_finish=self._on_session_finish,
+        )
         with self._lock:
             self._sessions[session_id] = new_session
 
@@ -471,14 +680,191 @@ class SessionManager:
         ):
             applied = new_session.step_ai_move()
         else:
-            self._broadcast_session(new_session)
+            self._on_session_change(new_session)
 
         with new_session.lock:
             return new_session.to_response(moves_applied=applied)
 
     def delete(self, session_id: str) -> None:
         with self._lock:
-            if session_id not in self._sessions:
+            sess = self._sessions.pop(session_id, None)
+            if sess is None:
                 raise GameError(f"Game session '{session_id}' not found.", status_code=404)
-            del self._sessions[session_id]
-        self._broadcast("session_delete", {"session_id": session_id})
+            if sess.room_code:
+                self._rooms.pop(sess.room_code, None)
+        self._broadcast_admin("session_delete", {"session_id": session_id})
+
+    # --- Live Mid-Game Difficulty Control ---
+
+    def update_session_difficulty(
+        self, session_id: str, ai_level: str, ai2_level: Optional[str] = None
+    ) -> GameStateResponse:
+        session = self.get(session_id)
+        session.set_ai_level(ai_level, ai2_level=ai2_level)
+        with session.lock:
+            return session.to_response(for_admin=True)
+
+    def update_winaprize_live_difficulty(self, ai_level: str) -> int:
+        with self._lock:
+            live_prize = [
+                sess
+                for sess in self._sessions.values()
+                if sess.channel == "winaprize" and sess.status == "playing"
+            ]
+        for sess in live_prize:
+            sess.set_ai_level(ai_level)
+        return len(live_prize)
+
+    def count_live_winaprize(self) -> int:
+        with self._lock:
+            return sum(
+                1
+                for sess in self._sessions.values()
+                if sess.channel == "winaprize" and sess.status == "playing"
+            )
+
+    # --- Online Friend Rooms (/game#XXXXXX) ---
+
+    def _generate_room_code(self) -> str:
+        for _ in range(30):
+            code = secrets.token_hex(3).upper()
+            if code not in self._rooms:
+                return code
+        return secrets.token_hex(4).upper()
+
+    def get_room(self, room_code: str) -> GameSession:
+        code = room_code.strip().upper().lstrip("#")
+        with self._lock:
+            sid = self._rooms.get(code)
+            if sid is None or sid not in self._sessions:
+                raise GameError(f"Room #{code} not found or expired.", status_code=404)
+            session = self._sessions[sid]
+            session.updated_at = time.time()
+            return session
+
+    def create_room(
+        self,
+        username: str,
+        rows: int = 6,
+        cols: int = 7,
+        align: int = 4,
+        starting_player: Any = 1,
+        random_start: bool = False,
+    ) -> tuple[GameStateResponse, str, int]:
+        starter, was_random = _resolve_starting_player(starting_player, random_start)
+        config = GameConfig(
+            rows=rows,
+            cols=cols,
+            align=align,
+            mode="player_vs_player",
+            starting_player=starter,
+            random_start=was_random,
+            username=username,
+            player2_name="Waiting for friend…",
+        )
+        session_id = str(uuid.uuid4())
+        p1_token = secrets.token_urlsafe(24)
+
+        with self._lock:
+            self._evict_stale()
+            code = self._generate_room_code()
+            session = _build_session(
+                session_id,
+                config,
+                channel="online_pvp",
+                room_code=code,
+                waiting_for_opponent=True,
+                allow_undo=False,
+                player_tokens={1: p1_token},
+                on_change=self._on_session_change,
+                on_finish=self._on_session_finish,
+            )
+            self._sessions[session_id] = session
+            self._rooms[code] = session_id
+
+        self._on_session_change(session)
+        with session.lock:
+            return session.to_response(), p1_token, 1
+
+    def join_room(
+        self, room_code: str, username: str
+    ) -> tuple[GameStateResponse, Optional[str], int]:
+        session = self.get_room(room_code)
+        cleaned = (username or "Guest").strip()[:32] or "Guest"
+
+        with session.lock:
+            if session.waiting_for_opponent and 2 not in session.player_tokens:
+                p2_token = secrets.token_urlsafe(24)
+                p2_display = (
+                    cleaned
+                    if cleaned != session.player_meta[1].name
+                    else f"{cleaned} (P2)"
+                )
+                session.player_tokens[2] = p2_token
+                session.config.player2_name = p2_display
+                session.player_objs[2].name = p2_display
+                session.player_meta[2].name = p2_display
+                session.c4.players[2][0] = p2_display
+                session.waiting_for_opponent = False
+                session.updated_at = time.time()
+                resp = session.to_response()
+                seat = 2
+                token_out: Optional[str] = p2_token
+            else:
+                resp = session.to_response()
+                seat = 0
+                token_out = None
+
+        if seat == 2:
+            self._on_session_change(session)
+        return resp, token_out, seat
+
+    def play_room_move(
+        self, room_code: str, col: int, player_token: str
+    ) -> GameStateResponse:
+        session = self.get_room(room_code)
+        with session.lock:
+            if session.waiting_for_opponent:
+                raise GameError("Waiting for your friend to join first.", status_code=409)
+            expected_token = session.player_tokens.get(session.c4.current_player)
+            if not expected_token or not secrets.compare_digest(player_token, expected_token):
+                raise GameError("It is not your turn (or you are spectating).", status_code=403)
+        applied = session.play_human_move(col=col, auto_ai_reply=False)
+        with session.lock:
+            return session.to_response(moves_applied=applied)
+
+    def rematch_room(
+        self, room_code: str, player_token: str, random_start: bool = False
+    ) -> GameStateResponse:
+        session = self.get_room(room_code)
+        with session.lock:
+            valid_tokens = list(session.player_tokens.values())
+            if not any(secrets.compare_digest(player_token, tok) for tok in valid_tokens):
+                raise GameError("Only players in this room can start a rematch.", status_code=403)
+            if session.waiting_for_opponent:
+                raise GameError("Waiting for opponent to join first.", status_code=409)
+
+            next_starter = (
+                random.choice([1, 2])
+                if random_start
+                else (2 if session.config.starting_player == 1 else 1)
+            )
+            session.config.starting_player = next_starter
+            session.config.random_start = random_start
+            session.c4.grid = [
+                [0 for _ in range(session.c4.col)] for _ in range(session.c4.row)
+            ]
+            session.c4.current_player = next_starter
+            session.status = "playing"
+            session.winner = None
+            session.winning_cells = []
+            session.move_history = []
+            session.snapshots = []
+            session.last_ai_info = None
+            session.persisted = False
+            session.created_at = time.time()
+            session.updated_at = time.time()
+            resp = session.to_response()
+
+        self._on_session_change(session)
+        return resp
