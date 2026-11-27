@@ -235,8 +235,13 @@ def get_public_winaprize_config():
 
 
 @app.post("/api/winaprize/games", response_model=GameStateResponse, status_code=201)
-def create_winaprize_game(payload: CreatePrizeGameRequest):
-    _assert_allowed_usernames(payload.username)
+def create_winaprize_game(payload: CreatePrizeGameRequest = CreatePrizeGameRequest()):
+    cleaned_user = (payload.username or "").strip()[:32]
+    if cleaned_user:
+        _assert_allowed_usernames(cleaned_user)
+    else:
+        cleaned_user = "Joueur"
+
     cfg = db.get_winaprize_config()
     if not cfg.get("enabled", True):
         raise HTTPException(
@@ -253,7 +258,7 @@ def create_winaprize_game(payload: CreatePrizeGameRequest):
         "starting_player": "random" if cfg.get("random_start") else cfg["starting_player"],
         "human_player": cfg["human_player"],
         "random_start": bool(cfg.get("random_start", False)),
-        "username": payload.username,
+        "username": cleaned_user,
     }
     return sessions.create(
         raw,

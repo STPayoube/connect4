@@ -156,13 +156,42 @@ class Database:
                 )
 
             row = conn.execute(
-                "SELECT key FROM app_settings WHERE key = 'winaprize_config'"
+                "SELECT key, value_json FROM app_settings WHERE key = 'winaprize_config'"
             ).fetchone()
             if row is None:
                 conn.execute(
                     "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)",
                     ("winaprize_config", json.dumps(DEFAULT_WINAPRIZE_CONFIG), time.time()),
                 )
+            else:
+                # Auto-translate legacy English default title/subtitle stored on existing VPS DBs
+                try:
+                    stored_cfg = json.loads(row["value_json"])
+                    legacy_titles = {
+                        "connect 4 challenge",
+                        "connect 4 prize challenge",
+                        "win a prize",
+                        "prize challenge",
+                    }
+                    legacy_subtitles = {
+                        "beat the ai to win a prize!",
+                        "beat the ai to win a prize",
+                        "challenge the ai to win a prize!",
+                    }
+                    changed = False
+                    if (stored_cfg.get("title") or "").strip().lower() in legacy_titles:
+                        stored_cfg["title"] = DEFAULT_WINAPRIZE_CONFIG["title"]
+                        changed = True
+                    if (stored_cfg.get("subtitle") or "").strip().lower() in legacy_subtitles:
+                        stored_cfg["subtitle"] = DEFAULT_WINAPRIZE_CONFIG["subtitle"]
+                        changed = True
+                    if changed:
+                        conn.execute(
+                            "UPDATE app_settings SET value_json = ?, updated_at = ? WHERE key = 'winaprize_config'",
+                            (json.dumps(stored_cfg), time.time()),
+                        )
+                except Exception:
+                    pass
 
             # Seed built-in moderation blacklist once automatically
             if seed_blacklist:

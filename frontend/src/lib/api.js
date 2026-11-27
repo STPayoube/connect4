@@ -138,10 +138,10 @@ export function getWinAPrizeConfig(signal) {
   return request('/winaprize/config', { method: 'GET', signal });
 }
 
-export function createWinAPrizeGame(username, signal) {
+export function createWinAPrizeGame(signal) {
   return request('/winaprize/games', {
     method: 'POST',
-    body: JSON.stringify({ username, auto_play_opening_ai: false }),
+    body: JSON.stringify({ auto_play_opening_ai: false }),
     signal,
   });
 }

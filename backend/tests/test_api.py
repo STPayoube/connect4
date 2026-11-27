@@ -591,4 +591,53 @@ def test_cannot_change_username_mid_game_only_at_start_or_end():
     assert r_end.json()["username"] == "PlayerAfterEnd"
 
 
+def test_winaprize_starts_without_username_and_migrates_english_defaults():
+    """Verify /winaprize works with no username (defaults to 'Joueur') and migrates legacy English defaults."""
+    res = client.post("/api/winaprize/games", json={})
+    assert res.status_code == 201
+    data = res.json()
+    assert data["channel"] == "winaprize"
+    assert data["username"] == "Joueur"
+    assert data["players"]["1"]["name"] == "Joueur"
+
+    # Test legacy English DB migration
+    from database import Database
+    import sqlite3, json as _json, time as _time
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    try:
+        db1 = Database(db_path=tmp.name, seed_blacklist=False)
+        with sqlite3.connect(tmp.name) as conn:
+            conn.execute(
+                "UPDATE app_settings SET value_json = ?, updated_at = ? WHERE key = 'winaprize_config'",
+                (
+                    _json.dumps(
+                        {
+                            "enabled": True,
+                            "rows": 6,
+                            "cols": 7,
+                            "align": 4,
+                            "ai_level": "impossible",
+                            "title": "Connect 4 Challenge",
+                            "subtitle": "Beat the AI to win a prize!",
+                        }
+                    ),
+                    _time.time(),
+                ),
+            )
+        # Re-initializing Database should migrate English defaults to French while preserving ai_level
+        db2 = Database(db_path=tmp.name, seed_blacklist=False)
+        cfg = db2.get_winaprize_config()
+        assert cfg["title"] == "Défi Puissance 4"
+        assert cfg["subtitle"] == "Battez l'IA pour gagner un prix !"
+        assert cfg["ai_level"] == "impossible"
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+
 

@@ -1,7 +1,6 @@
 <script>
   import { onDestroy, onMount } from 'svelte';
   import {
-    checkUsername,
     createWinAPrizeGame,
     forfeitGame,
     getGame,
@@ -18,7 +17,7 @@
 
   const PRIZE_SESSION_KEY = 'connect4_active_prize_session';
 
-  let { username = '', onSaveUsername = () => {}, onGoHome = () => {} } = $props();
+  let { onGoHome = () => {} } = $props();
 
   let prizeConfig = $state(null);
   let game = $state(null);
@@ -26,10 +25,6 @@
   let isThinking = $state(false);
   let error = $state(null);
   let wsConnected = $state(false);
-
-  let nameInput = $state('');
-  let nameError = $state(null);
-  let savingName = $state(false);
 
   let resumePromptGame = $state(null);
   let resumeBusy = $state(false);
@@ -170,11 +165,10 @@
     }
   }
 
-  async function startPrizeGame(playerName) {
+  async function startPrizeGame() {
     cancelPending();
     closeSocket();
     error = null;
-    nameError = null;
     isLoading = true;
     const controller = new AbortController();
     activeController = controller;
@@ -185,7 +179,7 @@
         isLoading = false;
         return;
       }
-      const state = await createWinAPrizeGame(playerName, controller.signal);
+      const state = await createWinAPrizeGame(controller.signal);
       if (activeController !== controller) return;
       game = state;
       isLoading = false;
@@ -204,12 +198,7 @@
       }
     } catch (err) {
       if (err.name === 'AbortError' || activeController !== controller) return;
-      if (err.status === 403) {
-        nameError = err.message;
-        game = null;
-      } else {
-        error = err.message || 'Impossible de lancer la partie.';
-      }
+      error = err.message || 'Impossible de lancer la partie.';
       isLoading = false;
     }
   }
@@ -305,24 +294,6 @@
     }
   }
 
-  async function handleNameSubmit(event) {
-    event.preventDefault();
-    if (savingName) return;
-    const cleaned = nameInput.trim().slice(0, 32);
-    if (!cleaned) return;
-    savingName = true;
-    nameError = null;
-    try {
-      await checkUsername(cleaned);
-      onSaveUsername(cleaned);
-      await startPrizeGame(cleaned);
-    } catch (err) {
-      nameError = err.message || "Ce pseudo n'est pas autorisé. Veuillez en choisir un autre.";
-    } finally {
-      savingName = false;
-    }
-  }
-
   function requestWithAbandonConfirm(title, description, confirmLabel, actionFn) {
     if (isGameInProgress) {
       confirmAction = { title, description, confirmLabel, onConfirm: actionFn };
@@ -395,14 +366,13 @@
       resumePromptGame = null;
       resumeBusy = false;
     }
-    if (username && (!prizeConfig || prizeConfig.enabled)) {
-      await startPrizeGame(username);
+    if (!prizeConfig || prizeConfig.enabled) {
+      await startPrizeGame();
     }
   }
 
   onMount(async () => {
     window.addEventListener('beforeunload', handleBeforeUnload);
-    nameInput = username || '';
     await loadConfig();
     if (prizeConfig && !prizeConfig.enabled) {
       isLoading = false;
@@ -429,11 +399,7 @@
       localStorage.removeItem(PRIZE_SESSION_KEY);
     }
 
-    if (username) {
-      await startPrizeGame(username);
-    } else {
-      isLoading = false;
-    }
+    await startPrizeGame();
   });
 
   onDestroy(() => {
@@ -510,42 +476,21 @@
           Jouer en mode normal
         </button>
       </div>
-    {:else if !game && !isLoading}
+    {:else if !game && !isLoading && !resumePromptGame}
       <div
-        class="mx-auto mt-14 max-w-sm rounded-2xl border border-slate-700/80 bg-slate-900 p-6 shadow-2xl"
+        class="mx-auto mt-14 max-w-sm rounded-2xl border border-slate-700/80 bg-slate-900 p-6 text-center shadow-2xl"
       >
-        <h2 class="text-base font-bold text-white">Entrez votre pseudo</h2>
+        <h2 class="text-base font-bold text-white">Défi Puissance 4</h2>
         <p class="mt-1 text-xs text-slate-400">
-          Indiquez votre pseudo pour démarrer le défi {prizeConfig?.rows || 6}×{prizeConfig?.cols ||
-            7} (alignement {prizeConfig?.align || 4}).
+          {error || 'Impossible de démarrer la partie pour le moment.'}
         </p>
-
-        {#if nameError}
-          <div
-            class="mt-3 rounded-xl border border-rose-500/40 bg-rose-950/60 px-3 py-2 text-xs text-rose-200"
-          >
-            {nameError}
-          </div>
-        {/if}
-
-        <form onsubmit={handleNameSubmit} class="mt-4 space-y-4">
-          <input
-            type="text"
-            required
-            maxlength="32"
-            disabled={savingName}
-            bind:value={nameInput}
-            placeholder="Votre pseudo"
-            class="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none disabled:opacity-60"
-          />
-          <button
-            type="submit"
-            disabled={savingName}
-            class="w-full rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {savingName ? 'Vérification…' : 'Lancer le défi'}
-          </button>
-        </form>
+        <button
+          type="button"
+          onclick={() => startPrizeGame()}
+          class="mt-4 w-full rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-500"
+        >
+          Réessayer
+        </button>
       </div>
     {:else}
       {#if humanWon}
@@ -553,7 +498,7 @@
           class="rounded-2xl border border-emerald-400/50 bg-emerald-500/15 px-5 py-4 text-center shadow-lg"
         >
           <p class="text-base font-bold text-emerald-200">
-            Félicitations, {game.username} ! Vous avez battu l'IA !
+            Félicitations ! Vous avez battu l'IA !
           </p>
           <p class="mt-1 font-mono text-xs text-emerald-300/90">
             Code de victoire vérifié : {game.session_id.slice(0, 8).toUpperCase()} · Enregistré
@@ -575,9 +520,12 @@
             <div
               class="flex h-96 items-center justify-center rounded-3xl border border-slate-800 bg-slate-900/50"
             >
-              <div
-                class="h-8 w-8 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent"
-              ></div>
+              <div class="flex flex-col items-center gap-3 text-slate-400">
+                <div
+                  class="h-8 w-8 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent"
+                ></div>
+                <span class="text-sm">Préparation du défi…</span>
+              </div>
             </div>
           {:else if game}
             <Board
@@ -604,7 +552,7 @@
                   'Relancer le défi ?',
                   'Une partie de défi est déjà entamée. Rejouer maintenant enregistrera la partie en cours comme un forfait (abandon).',
                   'Abandonner et rejouer',
-                  () => startPrizeGame(game?.username || nameInput || username)
+                  () => startPrizeGame()
                 )}
               disabled={isLoading || isThinking}
               class="w-full rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow transition hover:bg-indigo-500 disabled:opacity-50"
@@ -631,21 +579,6 @@
                 class="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-40"
               >
                 Annuler le coup
-              </button>
-            {/if}
-
-            {#if !isGameInProgress}
-              <button
-                type="button"
-                onclick={() => {
-                  cancelPending();
-                  closeSocket();
-                  game = null;
-                  nameInput = username || '';
-                }}
-                class="w-full rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200"
-              >
-                Changer de pseudo
               </button>
             {/if}
           </div>

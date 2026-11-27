@@ -22,8 +22,8 @@ class GameConfig(BaseModel):
     ai2_level: Optional[DifficultyLevel] = Field(default=None)
     ai_depth: Optional[int] = Field(default=None, ge=1, le=MAX_AI_DEPTH)
     ai2_depth: Optional[int] = Field(default=None, ge=1, le=MAX_AI_DEPTH)
-    username: str = Field(default="Guest", max_length=32)
-    player2_name: str = Field(default="Player 2", max_length=32)
+    username: str = Field(default="Invité", max_length=32)
+    player2_name: str = Field(default="Joueur 2", max_length=32)
     random_start: bool = Field(default=False)
 
     @model_validator(mode="after")
@@ -34,8 +34,8 @@ class GameConfig(BaseModel):
                 f"align ({self.align}) cannot exceed min(rows, cols) ({max_align})."
             )
 
-        self.username = (self.username or "Guest").strip()[:32] or "Guest"
-        self.player2_name = (self.player2_name or "Player 2").strip()[:32] or "Player 2"
+        self.username = (self.username or "Invité").strip()[:32] or "Invité"
+        self.player2_name = (self.player2_name or "Joueur 2").strip()[:32] or "Joueur 2"
 
         if self.ai_level is not None:
             self.ai_depth = LEVEL_TO_DEPTH[self.ai_level]
@@ -133,7 +133,7 @@ class UpdateWinAPrizeConfigRequest(WinAPrizeConfig):
 
 
 class CreatePrizeGameRequest(BaseModel):
-    username: str = Field(..., min_length=1, max_length=32)
+    username: Optional[str] = Field(default=None, max_length=32)
     auto_play_opening_ai: bool = False
 
 

@@ -792,11 +792,7 @@
 {#if activeView === 'admin'}
   <AdminPanel onBackToGame={() => navigateTo('normal')} />
 {:else if activeView === 'winaprize'}
-  <PrizeGameView
-    {username}
-    onSaveUsername={persistUsername}
-    onGoHome={() => navigateTo('normal')}
-  />
+  <PrizeGameView onGoHome={() => navigateTo('normal')} />
 {:else if activeView === 'room'}
   <OnlineRoomView
     initialCode={roomCode}
